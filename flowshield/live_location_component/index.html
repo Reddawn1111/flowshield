@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace, sans-serif;
+}
+html, body {
+  background: transparent;
+  overflow: hidden;
+  padding: 2px 4px;
+}
+
+.hud-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #09090b;
+  border: 1px solid #27272a;
+  border-radius: 2px;
+  padding: 6px 12px;
+  gap: 12px;
+  font-size: 11.5px;
+  color: #a1a1aa;
+  height: 42px;
+  box-shadow: none;
+}
+
+.hud-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.gps-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 2px;
+  background: #18181b;
+  border: 1px solid #27272a;
+  color: #a1a1aa;
+  white-space: nowrap;
+}
+.gps-badge.active {
+  background: #18181b;
+  border-color: #38bdf8;
+  color: #38bdf8;
+}
+.gps-badge.warning {
+  background: #18181b;
+  border-color: #ef4444;
+  color: #ef4444;
+}
+
+.pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #71717a;
+  box-shadow: none;
+}
+.gps-badge.active .pulse-dot {
+  background: #38bdf8;
+}
+.gps-badge.warning .pulse-dot {
+  background: #ef4444;
+}
+
+.coords-text {
+  font-family: monospace;
+  font-size: 11px;
+  color: #f4f4f5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.coords-text span {
+  color: #38bdf8;
+}
+
+.hud-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.btn {
+  background: #18181b;
+  border: 1px solid #27272a;
+  color: #d4d4d8;
+  border-radius: 2px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: monospace;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.btn:hover {
+  background: #27272a;
+  border-color: #52525b;
+  color: #ffffff;
+}
+.btn.active {
+  background: #27272a;
+  border-color: #38bdf8;
+  color: #38bdf8;
+}
+
+.scenario-select {
+  background: #18181b;
+  border: 1px solid #27272a;
+  color: #f4f4f5;
+  border-radius: 2px;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-family: monospace;
+  outline: none;
+  cursor: pointer;
+  max-width: 220px;
+}
+.scenario-select:focus {
+  border-color: #52525b;
+}
+</style>
+</head>
+<body>
+
+<div class="hud-bar" id="hudBar">
+  <div class="hud-left">
+    <div class="gps-badge" id="gpsBadge">
+      <span class="pulse-dot" id="pulseDot"></span>
+      <span id="badgeLabel">GPS STANDBY</span>
+    </div>
+    <div class="coords-text" id="coordsText">
+      Click <strong>"Locate Me"</strong> or choose a test scenario to evaluate 24h predictive flood risk.
+    </div>
+  </div>
+
+  <div class="hud-right">
+    <select class="scenario-select" id="scenarioSelect" title="Test & Simulation Scenarios">
+      <option value="LIVE">Live Browser GPS</option>
+      <option value="SAFE">Test 1: Safe Area (No Alert)</option>
+      <option value="SEVERE_18">Test 2: Safe Now -> Severe in 18h</option>
+      <option value="SEVERE_30">Test 3: Severe in 30h (Out of Window)</option>
+      <option value="ALREADY_SEVERE">Test 4: Already Severe (Breach)</option>
+      <option value="MOVE_A_B">Test 5: Move from Safe A -> Severe B</option>
+      <option value="CLEARED">Test 6: Severe Cleared</option>
+      <option value="DENIED">Test 7: Permission Denied</option>
+      <option value="UNAVAILABLE">Test 8: Forecast Unavailable</option>
+    </select>
+
+    <button class="btn" id="btnLocate" title="Request Live GPS Location">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <circle cx="12" cy="12" r="10"></circle>
+        <line x1="22" y1="12" x2="18" y2="12"></line>
+        <line x1="6" y1="12" x2="2" y2="12"></line>
+        <line x1="12" y1="6" x2="12" y2="2"></line>
+        <line x1="12" y1="22" x2="12" y2="18"></line>
+      </svg>
+      Locate Me
+    </button>
+
+    <button class="btn" id="btnNotify" title="Enable Desktop Browser Notifications">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+        <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+      </svg>
+      <span id="notifyLabel">Push Alerts</span>
+    </button>
+  </div>
+</div>
+
+<script>
+// State
+let currentCoords = null;
+let permissionState = "prompt";
+let notificationsEnabled = false;
+let currentScenario = "LIVE";
+let watchId = null;
+let lastNotifiedSignature = "";
+
+const gpsBadge = document.getElementById("gpsBadge");
+const badgeLabel = document.getElementById("badgeLabel");
+const coordsText = document.getElementById("coordsText");
+const btnLocate = document.getElementById("btnLocate");
+const btnNotify = document.getElementById("btnNotify");
+const notifyLabel = document.getElementById("notifyLabel");
+const scenarioSelect = document.getElementById("scenarioSelect");
+
+function notifyHeight() {
+  window.parent.postMessage({
+    isStreamlitMessage: true,
+    type: "streamlit:setFrameHeight",
+    height: document.body.scrollHeight || 44
+  }, "*");
+}
+
+function sendToStreamlit(payload) {
+  window.parent.postMessage({
+    isStreamlitMessage: true,
+    type: "streamlit:setComponentValue",
+    value: payload
+  }, "*");
+}
+
+// Check notification permission
+if ("Notification" in window) {
+  if (Notification.permission === "granted") {
+    notificationsEnabled = true;
+    btnNotify.classList.add("active");
+    notifyLabel.textContent = "Alerts ON";
+  } else if (Notification.permission === "denied") {
+    notifyLabel.textContent = "Alerts Blocked";
+  }
+}
+
+// Request notification permission
+btnNotify.addEventListener("click", function() {
+  if (!("Notification" in window)) {
+    alert("Desktop notifications are not supported in this browser.");
+    return;
+  }
+  Notification.requestPermission().then(function(perm) {
+    if (perm === "granted") {
+      notificationsEnabled = true;
+      btnNotify.classList.add("active");
+      notifyLabel.textContent = "Alerts ON";
+      new Notification("FLOWSHIELD Alerts Enabled", {
+        body: "Predictive flood early warnings will now notify you automatically.",
+        icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2300E5FF'><path d='M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z'/></svg>"
+      });
+      sendLocationUpdate();
+    } else {
+      notificationsEnabled = false;
+      btnNotify.classList.remove("active");
+      notifyLabel.textContent = "Alerts Blocked";
+    }
+  });
+});
+
+// Geolocation Handling
+function startTracking() {
+  if (!("geolocation" in navigator)) {
+    permissionState = "unavailable";
+    updateUI();
+    return;
+  }
+
+  badgeLabel.textContent = "LOCATING...";
+  gpsBadge.className = "gps-badge";
+
+  navigator.geolocation.getCurrentPosition(
+    function(pos) {
+      permissionState = "granted";
+      currentCoords = {
+        latitude: pos.coords.latitude,
+        longitude: pos.coords.longitude,
+        accuracy: Math.round(pos.coords.accuracy)
+      };
+      updateUI();
+      sendLocationUpdate();
+    },
+    function(err) {
+      if (err.code === 1) permissionState = "denied";
+      else permissionState = "unavailable";
+      updateUI();
+      sendLocationUpdate();
+    },
+    { enableHighAccuracy: true, timeout: 8000, maximumAge: 15000 }
+  );
+
+  // Set up continuous watch
+  if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+  watchId = navigator.geolocation.watchPosition(
+    function(pos) {
+      permissionState = "granted";
+      const newLat = pos.coords.latitude;
+      const newLon = pos.coords.longitude;
+      
+      // Check significant movement (> 100 meters)
+      if (!currentCoords || Math.abs(newLat - currentCoords.latitude) > 0.001 || Math.abs(newLon - currentCoords.longitude) > 0.001) {
+        currentCoords = {
+          latitude: newLat,
+          longitude: newLon,
+          accuracy: Math.round(pos.coords.accuracy)
+        };
+        updateUI();
+        sendLocationUpdate();
+      }
+    },
+    function(err) {
+      if (err.code === 1) permissionState = "denied";
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+  );
+}
+
+btnLocate.addEventListener("click", function() {
+  currentScenario = "LIVE";
+  scenarioSelect.value = "LIVE";
+  startTracking();
+});
+
+// Scenario Selector
+scenarioSelect.addEventListener("change", function(e) {
+  currentScenario = e.target.value;
+  if (currentScenario === "LIVE") {
+    startTracking();
+  } else {
+    // Clear live watch
+    if (watchId !== null) {
+      navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+    }
+    updateUI();
+    sendLocationUpdate();
+  }
+});
+
+function updateUI() {
+  if (currentScenario !== "LIVE") {
+    gpsBadge.className = "gps-badge active";
+    badgeLabel.textContent = "SIMULATION";
+    coordsText.innerHTML = `Simulating test scenario: <strong>${scenarioSelect.options[scenarioSelect.selectedIndex].text}</strong>`;
+    return;
+  }
+
+  if (permissionState === "granted" && currentCoords) {
+    gpsBadge.className = "gps-badge active";
+    badgeLabel.textContent = "GPS LIVE";
+    coordsText.innerHTML = `Live Coordinates: <span>${currentCoords.latitude.toFixed(4)}°, ${currentCoords.longitude.toFixed(4)}°</span> (±${currentCoords.accuracy}m)`;
+  } else if (permissionState === "denied") {
+    gpsBadge.className = "gps-badge warning";
+    badgeLabel.textContent = "GPS DENIED";
+    coordsText.innerHTML = `Location permission denied. Using selected map area as fallback.`;
+  } else if (permissionState === "unavailable") {
+    gpsBadge.className = "gps-badge warning";
+    badgeLabel.textContent = "GPS OFFLINE";
+    coordsText.innerHTML = `Device GPS is unavailable. Check system location services.`;
+  } else {
+    gpsBadge.className = "gps-badge";
+    badgeLabel.textContent = "GPS STANDBY";
+    coordsText.innerHTML = `Click <strong>"Locate Me"</strong> or choose a test scenario to evaluate 24h predictive flood risk.`;
+  }
+}
+
+function sendLocationUpdate() {
+  const payload = {
+    latitude: currentCoords ? currentCoords.latitude : null,
+    longitude: currentCoords ? currentCoords.longitude : null,
+    accuracy: currentCoords ? currentCoords.accuracy : null,
+    permission: permissionState,
+    scenario: currentScenario,
+    notifications_enabled: notificationsEnabled,
+    timestamp: Date.now()
+  };
+  sendToStreamlit(payload);
+}
+
+// Handle messages from Streamlit
+window.addEventListener("message", function(event) {
+  if (!event.data || event.data.type !== "streamlit:render") return;
+  const args = event.data.args || {};
+  const verdict = args.verdict || {};
+
+  // Check if we should trigger a desktop push notification
+  if (args.should_notify && verdict.is_alert && notificationsEnabled && ("Notification" in window) && Notification.permission === "granted") {
+    const hours = verdict.hours_until_severe;
+    const timeText = hours === 0 ? "NOW (Active)" : `in ~${hours} hours`;
+    const sig = `${verdict.area_name}:${verdict.forecast_status}:${hours}`;
+
+    if (sig !== lastNotifiedSignature) {
+      lastNotifiedSignature = sig;
+      new Notification("RED SEVERE FLOOD WARNING", {
+        body: `ALERT: ${verdict.area_name} is forecast to reach RED SEVERE flood conditions ${timeText}. Current status: ${verdict.current_status}.`,
+        requireInteraction: true,
+        icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23EF4444'><path d='M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z'/></svg>"
+      });
+    }
+  }
+
+  notifyHeight();
+});
+
+// Component Ready
+window.parent.postMessage({
+  isStreamlitMessage: true,
+  type: "streamlit:componentReady",
+  apiVersion: 1
+}, "*");
+
+setTimeout(notifyHeight, 50);
+setTimeout(notifyHeight, 200);
+</script>
+</body>
+</html>
