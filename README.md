@@ -8,6 +8,31 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](#)
 
 ---
+### Step 1: Build the 3D Digital Twin bundle
+```bash
+npm run build
+```
+This compiles the React/Three.js engine and automatically copies the built files into `flowshield/static/3d/` (served by Streamlit via static serving).
+
+### Step 2: Run the full platform
+```bash
+python -m streamlit run app.py
+```
+Open [http://localhost:8501](http://localhost:8501)
+
+---
+
+## Other Run Methods
+
+| Command | Description |
+|---|---|
+| `npm run dev` | Run standalone React 3D twin on `http://localhost:5173` |
+| `npm run dev:streamlit` | Run Streamlit dashboard only |
+| `npm run build` | Build 3D bundle and deploy to `flowshield/static/3d/` |
+| `python run.py` | Launch React dev server and open browser |
+| `run.bat` | Windows batch launcher |
+
+---
 
 ## 📌 Executive Summary
 
