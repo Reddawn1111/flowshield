@@ -76,6 +76,14 @@ async function fetchFromOpenMeteo(
     throw new Error('Unexpected elevation array length from Open-Meteo');
   }
 
+  // Sanitize raw sample points: clamp NoData (< -100), NaN, or negative ocean bathymetry to 0.0m
+  for (let i = 0; i < elevations.length; i++) {
+    const val = elevations[i];
+    if (isNaN(val) || val === null || val === undefined || val < 0.0) {
+      elevations[i] = 0.0;
+    }
+  }
+
   // 2D Bilinear Interpolation to target gridWidth x gridHeight
   const output = new Float32Array(gridWidth * gridHeight);
 
@@ -104,7 +112,7 @@ async function fetchFromOpenMeteo(
       const bottom = e01 * (1 - dx) + e11 * dx;
       const elev = top * (1 - dy) + bottom * dy;
 
-      output[y * gridWidth + x] = elev;
+      output[y * gridWidth + x] = Math.max(0.0, isNaN(elev) ? 0.0 : elev);
     }
   }
 
@@ -158,7 +166,8 @@ async function fetchFromTerrarium(
             const r = imgData[idx];
             const g = imgData[idx + 1];
             const b = imgData[idx + 2];
-            const elev = (r * 256 + g + b / 256) - 32768;
+            let elev = (r * 256 + g + b / 256) - 32768;
+            if (isNaN(elev) || elev < 0.0) elev = 0.0;
             output[y * gridWidth + x] = elev;
           }
         }
@@ -188,40 +197,103 @@ function generateProceduralDEM(
     const ny = y / (gridHeight - 1);
     for (let x = 0; x < gridWidth; x++) {
       const nx = x / (gridWidth - 1);
-      // Gentle slope modulated with high-frequency rolling harmonics
       const baseSlope = (nx - 0.5) * 8.0 + (ny - 0.5) * 4.0;
       const hills =
         Math.sin(nx * Math.PI * 3.5 + centerLon) * 3.0 +
         Math.cos(ny * Math.PI * 4.2 + centerLat) * 2.5;
-      output[y * gridWidth + x] = Math.max(1.0, 15.0 + baseSlope + hills);
+      output[y * gridWidth + x] = Math.max(0.0, 15.0 + baseSlope + hills);
     }
   }
   return output;
 }
 
 /**
- * Normalizes DEM so minimum elevation is offset to base height >= 0.8m
+ * Sanitizes DEM elevation data:
+ * 1. Clamps negative bathymetry and NoData (< -100, NaN) to 0.0m (sea level)
+ * 2. Spatial clamp filter: Detects isolated spike vertices where Z(x, y) - average_neighbor_Z > 25m
+ *    and clamps them to the neighbor average, eliminating coastal wall spikes.
+ * 3. Normalizes elevations smoothly starting from 0.0m at sea level.
  */
-function normalizeElevationGrid(grid: Float32Array): Float32Array {
-  let minElev = Infinity;
-  let maxElev = -Infinity;
+function normalizeElevationGrid(
+  grid: Float32Array,
+  gridWidth: number = 90,
+  gridHeight: number = 90
+): Float32Array {
+  const sanitized = new Float32Array(grid.length);
 
+  // Pass 1: Raw value sanitation and baseline clamp to sea level (0.0m)
   for (let i = 0; i < grid.length; i++) {
     const v = grid[i];
-    if (v < minElev) minElev = v;
-    if (v > maxElev) maxElev = v;
+    if (isNaN(v) || v === null || v === undefined || v < 0.0) {
+      sanitized[i] = 0.0;
+    } else {
+      sanitized[i] = v;
+    }
   }
 
-  const range = maxElev - minElev;
-  const BASE_HEIGHT = 0.85;
+  // Pass 2: Spatial spike suppression filter (eliminates coastal ridges and interpolation spikes)
+  const filtered = new Float32Array(grid.length);
+  for (let y = 0; y < gridHeight; y++) {
+    for (let x = 0; x < gridWidth; x++) {
+      const idx = y * gridWidth + x;
+      const currentZ = sanitized[idx];
 
-  // Scale gently: if elevation difference is huge (> 100m in 1.2km), compress it gracefully
-  const scale = range > 60 ? 60 / range : 1.0;
+      let sum = 0;
+      let count = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx >= 0 && nx < gridWidth && ny >= 0 && ny < gridHeight) {
+            sum += sanitized[ny * gridWidth + nx];
+            count++;
+          }
+        }
+      }
 
-  const result = new Float32Array(grid.length);
-  for (let i = 0; i < grid.length; i++) {
-    const norm = (grid[i] - minElev) * scale;
-    result[i] = parseFloat((norm + BASE_HEIGHT).toFixed(2));
+      const avgNeighbor = count > 0 ? sum / count : currentZ;
+
+      // If vertex is an isolated spike > 25m above surrounding neighbors, clamp to neighbor average
+      if (currentZ - avgNeighbor > 25.0) {
+        filtered[idx] = avgNeighbor;
+      } else {
+        filtered[idx] = currentZ;
+      }
+    }
+  }
+
+  // Pass 2.5: Coastal Skyscraper DSM Clutter Suppression
+  // Satellite DEMs (like Copernicus/SRTM) frequently measure the rooftops of skyscraper clusters in coastal CBDs (e.g. Lower Manhattan, Marina Bay).
+  // If the scene borders open sea (at least 15 perimeter cells <= 0.5m), clamp ground elevations to realistic coastal land topography (<= 16.0m).
+  let seaPerimeterCount = 0;
+  for (let x = 0; x < gridWidth; x++) {
+    if (filtered[0 * gridWidth + x] <= 0.5) seaPerimeterCount++;
+    if (filtered[(gridHeight - 1) * gridWidth + x] <= 0.5) seaPerimeterCount++;
+  }
+  for (let y = 1; y < gridHeight - 1; y++) {
+    if (filtered[y * gridWidth + 0] <= 0.5) seaPerimeterCount++;
+    if (filtered[y * gridWidth + (gridWidth - 1)] <= 0.5) seaPerimeterCount++;
+  }
+
+  if (seaPerimeterCount >= 15) {
+    for (let i = 0; i < filtered.length; i++) {
+      if (filtered[i] > 16.0) {
+        filtered[i] = 16.0;
+      }
+    }
+  }
+
+  // Pass 3: Gentle dynamic scaling so extreme mountains compress gracefully into diorama
+  let maxElev = 0.0;
+  for (let i = 0; i < filtered.length; i++) {
+    if (filtered[i] > maxElev) maxElev = filtered[i];
+  }
+
+  const scale = maxElev > 60 ? 60 / maxElev : 1.0;
+  const result = new Float32Array(filtered.length);
+  for (let i = 0; i < filtered.length; i++) {
+    result[i] = parseFloat((filtered[i] * scale).toFixed(2));
   }
 
   return result;

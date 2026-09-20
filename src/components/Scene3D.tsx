@@ -48,11 +48,16 @@ function sampleTerrainElevation(
     (1 - fx) * fy * z01 +
     fx * fy * z11;
 
-  // If over a river or canal, bridge smoothly over water
+  // If over a river, canal, or bay, bridge smoothly over water (sea level is 0.0m)
   const isWater = grid[y0][x0].isRiver || grid[y0][x1].isRiver || grid[y1][x0].isRiver || grid[y1][x1].isRiver;
   if (isWater) {
-    const maxBank = Math.max(z00, z10, z01, z11);
-    elev = Math.max(elev + 0.45, maxBank + 0.20);
+    const bankZ = Math.max(0.0,
+      !grid[y0][x0].isRiver ? z00 : 0.0,
+      !grid[y0][x1].isRiver ? z10 : 0.0,
+      !grid[y1][x0].isRiver ? z01 : 0.0,
+      !grid[y1][x1].isRiver ? z11 : 0.0
+    );
+    elev = Math.max(elev, bankZ + 0.60, 0.80);
   }
 
   return elev * VERTICAL_SCALE;
@@ -77,6 +82,8 @@ export const Scene3D: React.FC<Scene3DProps> = ({
   const waterMeshRef = useRef<THREE.Mesh | null>(null);
   const barriersMeshRef = useRef<THREE.InstancedMesh | null>(null);
   const selectedHighlightRef = useRef<THREE.Mesh | null>(null);
+  const waterDepthDataRef = useRef<Uint8Array | null>(null);
+  const waterDepthTextureRef = useRef<THREE.DataTexture | null>(null);
 
   // Lifeline groups
   const metroLineGroupRef = useRef<THREE.Group | null>(null);
@@ -91,7 +98,8 @@ export const Scene3D: React.FC<Scene3DProps> = ({
 
   // Dimension & scale constants
   const SPACING = 1.0;
-  const VERTICAL_SCALE = 0.45;
+  const VERTICAL_SCALE = 0.15;
+  const FLOOD_SURFACE_THRESHOLD = 0.08; // 80mm threshold for overland flood visualization
 
   const { width, height, cells, grid, assets, metroLines } = gridState;
   const HALF_W = (width * SPACING) / 2;
@@ -158,7 +166,7 @@ export const Scene3D: React.FC<Scene3DProps> = ({
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
-    controls.target.set(0, 4.0, 0);
+    controls.target.set(0, 1.5, 0);
     controls.maxPolarAngle = Math.PI / 2 - 0.05;
     controls.minDistance = 25;
     controls.maxDistance = 260;
@@ -238,6 +246,34 @@ export const Scene3D: React.FC<Scene3DProps> = ({
     posAttr.needsUpdate = true;
     terrainGeo.computeVertexNormals();
 
+    // Dynamic 2D water depth texture for continuous surface shading
+    const waterData = new Uint8Array(width * height * 4);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const cell = grid[y][x];
+        const bufferY = height - 1 - y;
+        const idx = (bufferY * width + x) * 4;
+        const isOverlandWater = !cell.isRiver && cell.buildingZ === 0;
+        const depthVal = isOverlandWater ? Math.min(255, Math.floor(cell.h * 25.5)) : 0;
+        waterData[idx] = depthVal;
+        waterData[idx + 1] = cell.isRiver ? 255 : 0;
+        waterData[idx + 2] = cell.hasBarrier ? 255 : 0;
+        waterData[idx + 3] = 255;
+      }
+    }
+    const waterTexture = new THREE.DataTexture(
+      waterData,
+      width,
+      height,
+      THREE.RGBAFormat,
+      THREE.UnsignedByteType
+    );
+    waterTexture.minFilter = THREE.LinearFilter;
+    waterTexture.magFilter = THREE.LinearFilter;
+    waterTexture.needsUpdate = true;
+    waterDepthDataRef.current = waterData;
+    waterDepthTextureRef.current = waterTexture;
+
     const terrainTexture = createTerrainTexture(gridState);
     const terrainMat = new THREE.MeshStandardMaterial({
       map: terrainTexture,
@@ -245,22 +281,70 @@ export const Scene3D: React.FC<Scene3DProps> = ({
       metalness: 0.15,
       flatShading: false,
     });
+
+    terrainMat.onBeforeCompile = (shader) => {
+      shader.uniforms.uWaterDepthMap = { value: waterTexture };
+      shader.uniforms.uWaterColor = { value: new THREE.Color('#00E5FF') }; // Vibrant Cyan
+      shader.uniforms.uMinDepth = { value: 0.05 };  // 0.05m threshold
+
+      shader.fragmentShader = `
+        uniform sampler2D uWaterDepthMap;
+        uniform vec3 uWaterColor;
+        uniform float uMinDepth;
+      ` + shader.fragmentShader;
+
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <map_fragment>',
+        `
+        #include <map_fragment>
+        
+        #if defined( USE_UV ) || defined( USE_MAP )
+        vec2 sampleUv = vMapUv;
+        vec4 waterSample = texture2D( uWaterDepthMap, sampleUv );
+        float waterDepth = waterSample.r * 10.0;
+        float isPermanentWater = waterSample.g;
+        
+        if (waterDepth >= uMinDepth && isPermanentWater < 0.5) {
+          float t = smoothstep(uMinDepth, uMinDepth + 0.08, waterDepth);
+          diffuseColor.rgb = mix(diffuseColor.rgb, uWaterColor, t * 0.92);
+        }
+        #endif
+        `
+      );
+
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <roughnessmap_fragment>',
+        `
+        #include <roughnessmap_fragment>
+        #if defined( USE_UV ) || defined( USE_MAP )
+        vec4 waterGlossSample = texture2D( uWaterDepthMap, vMapUv );
+        float glossDepth = waterGlossSample.r * 10.0;
+        if (glossDepth >= uMinDepth && waterGlossSample.g < 0.5) {
+          float glossT = smoothstep(uMinDepth, uMinDepth + 0.10, glossDepth);
+          roughnessFactor = mix(roughnessFactor, 0.08, glossT);
+        }
+        #endif
+        `
+      );
+    };
+
     const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
     terrainMesh.receiveShadow = true;
     terrainMesh.castShadow = true;
     scene.add(terrainMesh);
     terrainMeshRef.current = terrainMesh;
 
-    // 4. SOLID PERIMETER SKIRT WALLS (Connects 4 borders down to y = 0, eliminating gaps)
+    // 4. SOLID PERIMETER SKIRT WALLS (Connects 4 borders down to y = -2.0, cleanly enclosing bathymetry)
     const skirtGeo = new THREE.BufferGeometry();
     const skirtVerts: number[] = [];
+    const skirtBottomY = -2.0;
 
     // Helper to add a vertical wall quad
     const addSkirtQuad = (x1: number, y1: number, z1: number, x2: number, y2: number, z2: number) => {
-      // Triangle 1: (x1, y1, z1) -> (x2, y2, z2) -> (x2, 0, z2)
-      skirtVerts.push(x1, y1, z1, x2, y2, z2, x2, 0, z2);
-      // Triangle 2: (x1, y1, z1) -> (x2, 0, z2) -> (x1, 0, z1)
-      skirtVerts.push(x1, y1, z1, x2, 0, z2, x1, 0, z1);
+      // Triangle 1: (x1, y1, z1) -> (x2, y2, z2) -> (x2, skirtBottomY, z2)
+      skirtVerts.push(x1, y1, z1, x2, y2, z2, x2, skirtBottomY, z2);
+      // Triangle 2: (x1, y1, z1) -> (x2, skirtBottomY, z2) -> (x1, skirtBottomY, z1)
+      skirtVerts.push(x1, y1, z1, x2, skirtBottomY, z2, x1, skirtBottomY, z1);
     };
 
     // North Skirt (y = 0)
@@ -429,10 +513,10 @@ export const Scene3D: React.FC<Scene3DProps> = ({
 
     if (gridState.roads && gridState.roads.length > 0) {
       const roadVertices: number[] = [];
-      const spanMetersX = 1200.0;
-      const spanMetersZ = 1200.0;
+      const spanMetersX = gridState.spanMetersX || (width * 8.88);
+      const spanMetersZ = gridState.spanMetersZ || (height * 8.88);
 
-      // Coordinate converter: meters [-600, 600] -> Three.js world units [-HALF_W, HALF_W]
+      // Coordinate converter: local meters [-spanX/2, spanX/2] -> Three.js world units [-HALF_W, HALF_W]
       const toWorldX = (xm: number) => {
         const norm = (xm + spanMetersX / 2) / spanMetersX;
         const clampedNorm = Math.max(0.001, Math.min(0.999, norm));
@@ -547,6 +631,16 @@ export const Scene3D: React.FC<Scene3DProps> = ({
       if (roadVertices.length > 0) {
         const roadGeo = new THREE.BufferGeometry();
         roadGeo.setAttribute('position', new THREE.Float32BufferAttribute(roadVertices, 3));
+
+        const roadUvs: number[] = [];
+        for (let j = 0; j < roadVertices.length; j += 3) {
+          const vx = roadVertices[j];
+          const vz = roadVertices[j + 2];
+          const u = (vx + HALF_W) / (width * SPACING);
+          const v = 1.0 - (vz + HALF_H) / (height * SPACING);
+          roadUvs.push(u, v);
+        }
+        roadGeo.setAttribute('uv', new THREE.Float32BufferAttribute(roadUvs, 2));
         roadGeo.computeVertexNormals();
 
         const roadMat = new THREE.MeshStandardMaterial({
@@ -558,6 +652,48 @@ export const Scene3D: React.FC<Scene3DProps> = ({
           polygonOffsetFactor: -1.0,
           polygonOffsetUnits: -1.0,
         });
+
+        roadMat.onBeforeCompile = (shader) => {
+          shader.uniforms.uWaterDepthMap = { value: waterTexture };
+          shader.uniforms.uWaterColor = { value: new THREE.Color('#00E5FF') };
+          shader.uniforms.uMinDepth = { value: 0.05 };
+
+          shader.fragmentShader = `
+            uniform sampler2D uWaterDepthMap;
+            uniform vec3 uWaterColor;
+            uniform float uMinDepth;
+          ` + shader.fragmentShader;
+
+          shader.fragmentShader = shader.fragmentShader.replace(
+            '#include <color_fragment>',
+            `
+            #include <color_fragment>
+            #if defined( USE_UV )
+            vec4 roadWaterSample = texture2D( uWaterDepthMap, vUv );
+            float roadWaterDepth = roadWaterSample.r * 10.0;
+            if (roadWaterDepth >= uMinDepth && roadWaterSample.g < 0.5) {
+              float tRoad = smoothstep(uMinDepth, uMinDepth + 0.08, roadWaterDepth);
+              diffuseColor.rgb = mix(diffuseColor.rgb, uWaterColor, tRoad * 0.92);
+            }
+            #endif
+            `
+          );
+
+          shader.fragmentShader = shader.fragmentShader.replace(
+            '#include <roughnessmap_fragment>',
+            `
+            #include <roughnessmap_fragment>
+            #if defined( USE_UV )
+            vec4 roadGlossSample = texture2D( uWaterDepthMap, vUv );
+            float roadGlossDepth = roadGlossSample.r * 10.0;
+            if (roadGlossDepth >= uMinDepth && roadGlossSample.g < 0.5) {
+              float tGloss = smoothstep(uMinDepth, uMinDepth + 0.10, roadGlossDepth);
+              roughnessFactor = mix(roughnessFactor, 0.08, tGloss);
+            }
+            #endif
+            `
+          );
+        };
 
         const roadMesh = new THREE.Mesh(roadGeo, roadMat);
         roadMesh.receiveShadow = true;
@@ -660,6 +796,26 @@ export const Scene3D: React.FC<Scene3DProps> = ({
 
   // 2. DYNAMIC UPDATES: BUILDINGS, WATER, BARRIERS, METRO & BEACONS ON SIMULATION TICK
   useEffect(() => {
+    // 0. Update Dynamic Water Depth Data Texture for Ground & Road Surface Shaders
+    const depthData = waterDepthDataRef.current;
+    const depthTex = waterDepthTextureRef.current;
+    if (depthData && depthTex) {
+      for (let y = 0; y < height; y++) {
+        const bufferY = height - 1 - y;
+        for (let x = 0; x < width; x++) {
+          const cell = grid[y][x];
+          const idx = (bufferY * width + x) * 4;
+          const isOverlandWater = !cell.isRiver && cell.buildingZ === 0;
+          const depthVal = isOverlandWater ? Math.min(255, Math.floor(cell.h * 25.5)) : 0;
+          depthData[idx] = depthVal;
+          depthData[idx + 1] = cell.isRiver ? 255 : 0;
+          depthData[idx + 2] = cell.hasBarrier ? 255 : 0;
+          depthData[idx + 3] = 255;
+        }
+      }
+      depthTex.needsUpdate = true;
+    }
+
     // A. Update 3D Building Blocks
     const bldgMesh = buildingsMeshRef.current;
     if (bldgMesh && buildingCells.length > 0) {
@@ -668,7 +824,7 @@ export const Scene3D: React.FC<Scene3DProps> = ({
         const posX = (cell.x * SPACING) - HALF_W + SPACING / 2;
         const posZ = (cell.y * SPACING) - HALF_H + SPACING / 2;
         const baseY = cell.terrainZ * VERTICAL_SCALE;
-        const bldgHeight = Math.max(0.4, cell.buildingZ * VERTICAL_SCALE);
+        const bldgHeight = Math.max(0.6, cell.buildingZ * 0.45);
 
         dummyPosition.current.set(posX, baseY, posZ);
         dummyScale.current.set(1, bldgHeight, 1);
@@ -700,7 +856,7 @@ export const Scene3D: React.FC<Scene3DProps> = ({
       if (bldgMesh.instanceColor) bldgMesh.instanceColor.needsUpdate = true;
     }
 
-    // B. Update Volumetric 3D Water Mesh (Continuous Smooth Fluid Surface, Zero Sawtooth Artifacts)
+    // B. Update Volumetric 3D Water Mesh (Continuous Seamless Fluid Surface, Zero Voxel Steps)
     const waterMesh = waterMeshRef.current;
     if (waterMesh) {
       const posArr = waterPositions.current;
@@ -736,49 +892,50 @@ export const Scene3D: React.FC<Scene3DProps> = ({
         pushTri(ax, ay, az, cx, cy, cz, dx, dy, dz);
       };
 
-      // Pre-pass: Compute smooth corner elevations for continuous water body
       const numCornerX = width + 1;
       const numCornerY = height + 1;
-      const cornerWaterY = new Float32Array(numCornerX * numCornerY);
-      const cornerGroundY = new Float32Array(numCornerX * numCornerY);
-      const cornerWaterCount = new Uint8Array(numCornerX * numCornerY);
-      const cornerGroundCount = new Uint8Array(numCornerX * numCornerY);
+      const totalCorners = numCornerX * numCornerY;
 
+      const cornerWaterY = new Float32Array(totalCorners);
+      const cornerBedY = new Float32Array(totalCorners);
+      const cornerRiverCount = new Uint8Array(totalCorners);
+
+      // Pass 1: Accumulate elevations at grid corner intersections from all adjacent river cells
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
           const cell = grid[y][x];
-          const groundElevation = cell.terrainZ * VERTICAL_SCALE;
+          if (!cell.isRiver) continue;
+
+          // Universal hydrostatic surface elevation across coastal sea, lakes, basins & rivers
+          const surfaceMeters = cell.terrainZ + cell.h;
+          const surfaceY = Math.max(0.005, surfaceMeters * VERTICAL_SCALE + 0.005);
+          const bedY = Math.min(surfaceY - 0.01, cell.terrainZ * VERTICAL_SCALE);
 
           const idx00 = y * numCornerX + x;
           const idx10 = y * numCornerX + (x + 1);
           const idx01 = (y + 1) * numCornerX + x;
           const idx11 = (y + 1) * numCornerX + (x + 1);
 
-          cornerGroundY[idx00] += groundElevation; cornerGroundCount[idx00]++;
-          cornerGroundY[idx10] += groundElevation; cornerGroundCount[idx10]++;
-          cornerGroundY[idx01] += groundElevation; cornerGroundCount[idx01]++;
-          cornerGroundY[idx11] += groundElevation; cornerGroundCount[idx11]++;
-
-          if (cell.h > 0.02) {
-            const surfaceElev = (cell.terrainZ + cell.h) * VERTICAL_SCALE + 0.02;
-            cornerWaterY[idx00] += surfaceElev; cornerWaterCount[idx00]++;
-            cornerWaterY[idx10] += surfaceElev; cornerWaterCount[idx10]++;
-            cornerWaterY[idx01] += surfaceElev; cornerWaterCount[idx01]++;
-            cornerWaterY[idx11] += surfaceElev; cornerWaterCount[idx11]++;
-          }
+          cornerWaterY[idx00] += surfaceY; cornerBedY[idx00] += bedY; cornerRiverCount[idx00]++;
+          cornerWaterY[idx10] += surfaceY; cornerBedY[idx10] += bedY; cornerRiverCount[idx10]++;
+          cornerWaterY[idx01] += surfaceY; cornerBedY[idx01] += bedY; cornerRiverCount[idx01]++;
+          cornerWaterY[idx11] += surfaceY; cornerBedY[idx11] += bedY; cornerRiverCount[idx11]++;
         }
       }
 
-      for (let i = 0; i < cornerWaterY.length; i++) {
-        if (cornerWaterCount[i] > 0) cornerWaterY[i] /= cornerWaterCount[i];
-        if (cornerGroundCount[i] > 0) cornerGroundY[i] /= cornerGroundCount[i];
+      // Pass 2: Normalize corner elevations
+      for (let i = 0; i < totalCorners; i++) {
+        if (cornerRiverCount[i] > 0) {
+          cornerWaterY[i] /= cornerRiverCount[i];
+          cornerBedY[i] /= cornerRiverCount[i];
+        }
       }
 
-      // Emit smooth water quads & perimeter shoreline skirts
+      // Pass 3: Emit continuous shared-corner water surface quads and shoreline skirts
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
           const cell = grid[y][x];
-          if (cell.h <= 0.02) continue;
+          if (!cell.isRiver) continue;
 
           const x0 = (x * SPACING) - HALF_W;
           const x1 = x0 + SPACING;
@@ -790,12 +947,17 @@ export const Scene3D: React.FC<Scene3DProps> = ({
           const idx01 = (y + 1) * numCornerX + x;
           const idx11 = (y + 1) * numCornerX + (x + 1);
 
-          const wy00 = Math.max(cornerGroundY[idx00] + 0.015, cornerWaterY[idx00]);
-          const wy10 = Math.max(cornerGroundY[idx10] + 0.015, cornerWaterY[idx10]);
-          const wy11 = Math.max(cornerGroundY[idx11] + 0.015, cornerWaterY[idx11]);
-          const wy01 = Math.max(cornerGroundY[idx01] + 0.015, cornerWaterY[idx01]);
+          const wy00 = cornerWaterY[idx00];
+          const wy10 = cornerWaterY[idx10];
+          const wy11 = cornerWaterY[idx11];
+          const wy01 = cornerWaterY[idx01];
 
-          // 1. Top Smooth Fluid Surface Quad
+          const by00 = cornerBedY[idx00];
+          const by10 = cornerBedY[idx10];
+          const by11 = cornerBedY[idx11];
+          const by01 = cornerBedY[idx01];
+
+          // Top continuous fluid surface (seamlessly shared corners between neighboring cells)
           pushQuad(
             x0, wy00, z0,
             x1, wy10, z0,
@@ -803,22 +965,25 @@ export const Scene3D: React.FC<Scene3DProps> = ({
             x0, wy01, z1
           );
 
-          // 2. Volumetric Shoreline Skirts (Vertical side walls where water meets dry ground)
+          // Shoreline & Perimeter Skirts (Vertical walls going DOWN from surface to bed)
           // North edge
-          if (y === 0 || grid[y - 1][x].h <= 0.02) {
-            pushQuad(x0, wy00, z0, x1, wy10, z0, x1, cornerGroundY[idx10], z0, x0, cornerGroundY[idx00], z0);
+          if (y === 0 || !grid[y - 1][x].isRiver) {
+            pushQuad(x0, wy00, z0, x1, wy10, z0, x1, by10, z0, x0, by00, z0);
           }
+
           // South edge
-          if (y === height - 1 || grid[y + 1][x].h <= 0.02) {
-            pushQuad(x1, wy11, z1, x0, wy01, z1, x0, cornerGroundY[idx01], z1, x1, cornerGroundY[idx11], z1);
+          if (y === height - 1 || !grid[y + 1][x].isRiver) {
+            pushQuad(x1, wy11, z1, x0, wy01, z1, x0, by01, z1, x1, by11, z1);
           }
+
           // West edge
-          if (x === 0 || grid[y][x - 1].h <= 0.02) {
-            pushQuad(x0, wy01, z1, x0, wy00, z0, x0, cornerGroundY[idx00], z0, x0, cornerGroundY[idx01], z1);
+          if (x === 0 || !grid[y][x - 1].isRiver) {
+            pushQuad(x0, wy01, z1, x0, wy00, z0, x0, by00, z0, x0, by01, z1);
           }
+
           // East edge
-          if (x === width - 1 || grid[y][x + 1].h <= 0.02) {
-            pushQuad(x1, wy10, z0, x1, wy11, z1, x1, cornerGroundY[idx11], z1, x1, cornerGroundY[idx10], z0);
+          if (x === width - 1 || !grid[y][x + 1].isRiver) {
+            pushQuad(x1, wy10, z0, x1, wy11, z1, x1, by11, z1, x1, by10, z0);
           }
         }
       }

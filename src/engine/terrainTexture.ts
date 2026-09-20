@@ -74,6 +74,9 @@ export function createTerrainTexture(gridState: GridState): THREE.CanvasTexture 
         const z11 = grid[y + 1][x + 1].terrainZ;
         const z01 = grid[y + 1][x].terrainZ;
 
+        // Do not draw topographic contour lines across water bodies or river channels
+        if (grid[y][x].isRiver || grid[y][x + 1].isRiver || grid[y + 1][x + 1].isRiver || grid[y + 1][x].isRiver) continue;
+
         // Determine 4-bit index (TL=8, TR=4, BR=2, BL=1)
         let mask = 0;
         if (z00 >= level) mask |= 8;

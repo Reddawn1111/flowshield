@@ -124,8 +124,8 @@ export function loadTerrainData(dataset: DigitalTwinDataset): GridState {
     const row: Cell[] = [];
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
-      const rawElev = dataset.elevationGrid[idx] || 0.85;
-      const terrainZ = parseFloat(Math.max(0.7, rawElev).toFixed(2));
+      const rawElev = dataset.elevationGrid[idx] !== undefined && !isNaN(dataset.elevationGrid[idx]) ? dataset.elevationGrid[idx] : 0.0;
+      const terrainZ = parseFloat(Math.max(0.0, rawElev).toFixed(2));
 
       const cell: Cell = {
         x,
@@ -154,8 +154,79 @@ export function loadTerrainData(dataset: DigitalTwinDataset): GridState {
     grid.push(row);
   }
 
-  // 2. Rasterize Pre-Existing Water Bodies (Natural Rivers, Bays, Reservoirs, Canals)
-  // Process FIRST so water bodies define the physical geographic landscape!
+  // 2. Identify Ocean Water Bodies from DEM & Perimeter Flood-Fill
+  // Only execute for genuine coastal cities where the diorama boundary meets open sea (at least 10 sea-level border cells)
+  let seaLevelPerimeterCount = 0;
+  for (let x = 0; x < width; x++) {
+    if ((dataset.elevationGrid[0 * width + x] || 0) <= 0.05) seaLevelPerimeterCount++;
+    if ((dataset.elevationGrid[(height - 1) * width + x] || 0) <= 0.05) seaLevelPerimeterCount++;
+  }
+  for (let y = 1; y < height - 1; y++) {
+    if ((dataset.elevationGrid[y * width + 0] || 0) <= 0.05) seaLevelPerimeterCount++;
+    if ((dataset.elevationGrid[y * width + (width - 1)] || 0) <= 0.05) seaLevelPerimeterCount++;
+  }
+
+  if (seaLevelPerimeterCount >= 10) {
+    const oceanQueue: [number, number][] = [];
+    const visitedOcean = new Uint8Array(width * height);
+
+    // Enqueue perimeter cells at sea level (rawElev <= 0.05)
+    for (let x = 0; x < width; x++) {
+      const topIdx = 0 * width + x;
+      if ((dataset.elevationGrid[topIdx] || 0) <= 0.05) {
+        oceanQueue.push([x, 0]);
+        visitedOcean[topIdx] = 1;
+      }
+      const btmIdx = (height - 1) * width + x;
+      if ((dataset.elevationGrid[btmIdx] || 0) <= 0.05) {
+        oceanQueue.push([x, height - 1]);
+        visitedOcean[btmIdx] = 1;
+      }
+    }
+    for (let y = 1; y < height - 1; y++) {
+      const leftIdx = y * width + 0;
+      if ((dataset.elevationGrid[leftIdx] || 0) <= 0.05) {
+        oceanQueue.push([0, y]);
+        visitedOcean[leftIdx] = 1;
+      }
+      const rightIdx = y * width + (width - 1);
+      if ((dataset.elevationGrid[rightIdx] || 0) <= 0.05) {
+        oceanQueue.push([width - 1, y]);
+        visitedOcean[rightIdx] = 1;
+      }
+    }
+
+    let oceanHead = 0;
+    while (oceanHead < oceanQueue.length) {
+      const [ox, oy] = oceanQueue[oceanHead++];
+      const oCell = grid[oy][ox];
+      oCell.isRiver = true;
+      oCell.landType = 'river';
+      oCell.terrainZ = -2.0;
+      oCell.h = 2.0;
+      oCell.baseDepth = 2.0;
+      oCell.prevH = 2.0;
+      oCell.drainageRate = 0.0;
+      oCell.baseDrainage = 0.0;
+      oCell.infiltrationK = 0.0;
+
+      const dirs = [[0, 1], [0, -1], [1, 0], [-1, 0]];
+      for (const [ddx, ddy] of dirs) {
+        const nx = ox + ddx;
+        const ny = oy + ddy;
+        if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+          const nIdx = ny * width + nx;
+          if (!visitedOcean[nIdx] && (dataset.elevationGrid[nIdx] || 0) <= 0.05) {
+            visitedOcean[nIdx] = 1;
+            oceanQueue.push([nx, ny]);
+          }
+        }
+      }
+    }
+  }
+
+  // 3. Rasterize Pre-Existing Water Bodies (Natural Rivers, Bays, Reservoirs, Canals)
+  // Process so inland water bodies define the physical geographic landscape!
   if (dataset.waterBodies) {
     for (const water of dataset.waterBodies) {
       const isPolygonCandidate =
@@ -180,33 +251,94 @@ export function loadTerrainData(dataset: DigitalTwinDataset): GridState {
 
         const poly = water.isClosed ? water.points : [...water.points, water.points[0]];
 
+        const insideCells: Cell[] = [];
         for (let gy = gMinY; gy <= gMaxY; gy++) {
           const cz = ((gy + 0.5) / height - 0.5) * spanZ;
           for (let gx = gMinX; gx <= gMaxX; gx++) {
             const cx = ((gx + 0.5) / width - 0.5) * spanX;
             // Ray-casting point-in-polygon check: ONLY mark cells genuinely inside the water body!
             if (pointInPolygon(cx, cz, poly)) {
-              const cell = grid[gy][gx];
+              insideCells.push(grid[gy][gx]);
+            }
+          }
+        }
+
+        if (insideCells.length > 0) {
+          // Check if this is a coastal open water body or an inland lake/reservoir/basin
+          let isCoastal = false;
+          let minElev = Infinity;
+          for (const c of insideCells) {
+            if (c.terrainZ <= 0.5) isCoastal = true;
+            if (c.terrainZ < minElev) minElev = c.terrainZ;
+          }
+
+          if (isCoastal || seaLevelPerimeterCount >= 10) {
+            // Coastal open water: hydrostatic equilibrium at sea level (0.0m)
+            for (const cell of insideCells) {
               cell.isRiver = true;
               cell.landType = 'river';
               cell.isRoad = false;
-              cell.drainageRate = 45.0;
-              cell.baseDrainage = 45.0;
+              cell.drainageRate = 0.0;
+              cell.baseDrainage = 0.0;
               cell.infiltrationK = 0.0;
-              // Carve natural bathymetric depression for waterbed
-              cell.terrainZ = Math.max(0.35, parseFloat((cell.terrainZ - 0.45).toFixed(2)));
-              cell.h = 0.25;
-              cell.prevH = 0.25;
               cell.buildingZ = 0.0;
+              cell.terrainZ = -2.0;
+              cell.h = 2.0;
+              cell.baseDepth = 2.0;
+              cell.prevH = 2.0;
+            }
+          } else {
+            // Inland lake, reservoir, or basin: determine the true equilibrium pool level
+            // Collect neighboring perimeter rim cells to find the basin overflow threshold
+            let minRimZ = Infinity;
+            let rimCount = 0;
+            for (const c of insideCells) {
+              for (const [ddx, ddy] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+                const nx = c.x + ddx;
+                const ny = c.y + ddy;
+                if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                  const nCell = grid[ny][nx];
+                  const ncx = ((nx + 0.5) / width - 0.5) * spanX;
+                  const ncz = ((ny + 0.5) / height - 0.5) * spanZ;
+                  if (!pointInPolygon(ncx, ncz, poly)) {
+                    if (nCell.terrainZ < minRimZ) minRimZ = nCell.terrainZ;
+                    rimCount++;
+                  }
+                }
+              }
+            }
+
+            // Pool level is anchored to the natural rim threshold so water sits flush
+            const lakePoolLevel = rimCount > 0 && isFinite(minRimZ)
+              ? Math.max(0.5, parseFloat(minRimZ.toFixed(2)))
+              : Math.max(0.5, parseFloat(minElev.toFixed(2)));
+
+            // Carve bathymetric bed depth below pool level so the basin has authentic volume and stays 100% full
+            const lakeDepth = Math.max(2.5, Math.min(6.5, 2.0 + Math.sqrt(insideCells.length) * 0.12));
+
+            for (const cell of insideCells) {
+              cell.isRiver = true;
+              cell.landType = 'river';
+              cell.isRoad = false;
+              cell.drainageRate = 0.0;
+              cell.baseDrainage = 0.0;
+              cell.infiltrationK = 0.0;
+              cell.buildingZ = 0.0;
+
+              // Bed is carved below pool level; water depth is exactly (poolLevel - terrainZ)
+              cell.terrainZ = Math.max(0.0, parseFloat((lakePoolLevel - lakeDepth).toFixed(2)));
+              cell.h = parseFloat((lakePoolLevel - cell.terrainZ).toFixed(2));
+              cell.baseDepth = cell.h;
+              cell.prevH = cell.h;
             }
           }
         }
       }
 
-      // Also trace waterway corridor line (linear waterways, rivers, canals, streams, coastlines)
-      const isWaterwayOrCoast = /river|canal|dock|stream|waterway|coastline|harbour|bay|weir|floating_barrier/.test(water.type);
-      if (isWaterwayOrCoast) {
-        const channelRadius = /river|dock|basin|harbour|bay/.test(water.type) ? 2 : 1;
+      // Also trace actual linear waterway corridor lines (rivers, canals, streams, waterways - NOT coastlines/weirs)
+      const isLinearWaterway = /river|canal|dock|stream|waterway|water/.test(water.type) && !/coastline|weir/.test(water.type);
+      if (isLinearWaterway) {
+        const channelRadius = /river|canal|dock|basin|harbour|bay|water/.test(water.type) ? 2 : 1;
 
         for (let i = 0; i < water.points.length - 1; i++) {
           const [x1, z1] = water.points[i];
@@ -237,12 +369,23 @@ export function loadTerrainData(dataset: DigitalTwinDataset): GridState {
                 cell.isRiver = true;
                 cell.landType = 'river';
                 cell.isRoad = false;
-                cell.drainageRate = 45.0;
-                cell.baseDrainage = 45.0;
+                cell.drainageRate = 0.0;
+                cell.baseDrainage = 0.0;
                 cell.infiltrationK = 0.0;
-                cell.terrainZ = Math.max(0.35, parseFloat((cell.terrainZ - 0.40).toFixed(2)));
-                cell.h = 0.25;
-                cell.prevH = 0.25;
+                const bankZ = cell.terrainZ;
+                if (bankZ <= 0.5) {
+                  // Coastal ocean bathymetry
+                  cell.terrainZ = -2.0;
+                  cell.h = 2.0;
+                  cell.baseDepth = 2.0;
+                  cell.prevH = 2.0;
+                } else {
+                  // Inland relative shallow bed carving
+                  cell.terrainZ = Math.max(0.0, parseFloat((bankZ - 1.2).toFixed(2)));
+                  cell.h = 1.0;
+                  cell.baseDepth = 1.0;
+                  cell.prevH = 1.0;
+                }
                 cell.buildingZ = 0.0;
               }
             }
@@ -341,7 +484,7 @@ export function loadTerrainData(dataset: DigitalTwinDataset): GridState {
     const gMinY = Math.max(0, Math.floor(((minZ + spanZ / 2) / spanZ) * height));
     const gMaxY = Math.min(height - 1, Math.ceil(((maxZ + spanZ / 2) / spanZ) * height));
 
-    const scaledHeight = parseFloat(Math.min(24.0, Math.max(2.5, bldg.height * HEIGHT_SCALE)).toFixed(2));
+    const scaledHeight = parseFloat(Math.min(75.0, Math.max(2.5, bldg.height * HEIGHT_SCALE)).toFixed(2));
     const landType: LandType = scaledHeight >= 6.5 ? 'urban_high' : 'urban_low';
     const isSingleCell = gMaxX - gMinX <= 1 && gMaxY - gMinY <= 1;
 
@@ -469,5 +612,7 @@ export function loadTerrainData(dataset: DigitalTwinDataset): GridState {
     assets,
     metroLines,
     roads: dataset.roads,
+    spanMetersX: spanX,
+    spanMetersZ: spanZ,
   };
 }

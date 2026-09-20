@@ -31,6 +31,7 @@ export interface Cell {
   isRoad: boolean;        // Whether cell is part of the urban road network
   isRiver: boolean;       // Whether cell is part of the river channel
   h: number;              // Water depth in meters
+  baseDepth?: number;     // Nominal hydrostatic baseline depth (e.g. 2.0m ocean, 1.0m river)
   prevH: number;          // Previous step water depth
   dh_dt: number;          // Rate of water rise (m/hr)
   drainageRate: number;   // Active drainage clearance (mm/hr)
@@ -58,6 +59,8 @@ export interface GridState {
   assets: CriticalAsset[];
   metroLines: MetroLine[];
   roads?: RoadFeature[];
+  spanMetersX?: number;
+  spanMetersZ?: number;
 }
 
 export interface ScenarioPreset {

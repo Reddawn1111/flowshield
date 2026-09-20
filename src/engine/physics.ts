@@ -30,8 +30,11 @@ export function simulateStep(
       const cell = grid[y][x];
       cell.prevH = cell.h;
 
-      // Direct precipitation inflow
-      let newH = cell.h + rainfallMeters;
+      // Direct precipitation inflow (streets, bare land, rivers receive rain; building roofs shed to drainage)
+      let newH = cell.h;
+      if (cell.buildingZ === 0) {
+        newH += rainfallMeters;
+      }
 
       // River surge inflow at upstream headwaters
       if (cell.isRiver && y < 6 && riverSurgeInflow > 0) {
@@ -91,11 +94,24 @@ export function simulateStep(
             neighborFluxes.push({ nx, ny, volume: fluxVol });
             totalOutFlux += fluxVol;
           }
+        } else {
+          // Open / Free Outflow Boundary Condition
+          // Neighbor is off the diorama pedestal into empty space.
+          // Perimeter edge cells discharge runoff freely outward into the void!
+          const isEdge = x === 0 || x === width - 1 || y === 0 || y === height - 1;
+          if (isEdge && availableDepth > 0.005) {
+            const freeSlope = 1.8;
+            const qRate = ALPHA * CELL_SPACING_M * Math.sqrt(freeSlope) * Math.pow(availableDepth, 1.2);
+            const fluxVol = qRate * (dtHours * 3600.0);
+
+            neighborFluxes.push({ nx: -1, ny: -1, volume: fluxVol });
+            totalOutFlux += fluxVol;
+          }
         }
       }
 
-      // CFL Conservation limit: outflux cannot exceed 35% of available water in cell per step
-      const maxTransferVolume = availableDepth * CELL_AREA_M2 * 0.35;
+      // CFL Conservation limit: outflux cannot exceed 20% of available water in cell per step
+      const maxTransferVolume = availableDepth * CELL_AREA_M2 * 0.20;
       const scale = totalOutFlux > maxTransferVolume && totalOutFlux > 0
         ? maxTransferVolume / totalOutFlux
         : 1.0;
@@ -103,7 +119,10 @@ export function simulateStep(
       for (const { nx, ny, volume } of neighborFluxes) {
         const actualFlux = volume * scale;
         netFluxM3[y][x] -= actualFlux;
-        netFluxM3[ny][nx] += actualFlux;
+        if (nx >= 0 && ny >= 0) {
+          netFluxM3[ny][nx] += actualFlux;
+        }
+        // If nx < 0, ny < 0: this water leaves the system into the pedestal void!
       }
     }
   }
@@ -119,34 +138,67 @@ export function simulateStep(
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const cell = grid[y][x];
+      const isPerimeter = x === 0 || x === width - 1 || y === 0 || y === height - 1;
+      const baseDepth = cell.baseDepth ?? (cell.isRiver ? (cell.terrainZ < 0 ? 2.0 : 1.0) : 0.0);
+
+      // A. Infinite Ocean Sink: Boundary water cells absorb runoff and pin sea level
+      if (cell.isRiver && isPerimeter) {
+        cell.h = baseDepth;
+        cell.dh_dt = 0;
+        cell.risk = 'safe';
+        continue;
+      }
+
       const deltaH = netFluxM3[y][x] / CELL_AREA_M2;
-      let postFlowH = Math.max(0.0, intermediateH[y][x] + deltaH);
+      let postFlowH = Math.max(0.0, intermediateH[y][x] + (isNaN(deltaH) ? 0 : deltaH));
+      if (isNaN(postFlowH) || !isFinite(postFlowH)) {
+        postFlowH = 0.0;
+      }
+      postFlowH = Math.min(15.0, postFlowH);
 
-      // Drainage and Infiltration applied to the pooled/flowing water
-      // Impervious roads and rooftops have minimal infiltration
-      const effectiveInfiltration = cell.isRoad || cell.landType === 'urban_high'
-        ? Math.min(2.0, cell.infiltrationK)
-        : cell.infiltrationK;
-      
-      const activeDrainage = cell.isObstructed ? 0 : cell.drainageRate;
-      const totalClearanceRate = (activeDrainage + effectiveInfiltration) / 1000.0; // m/hr
-      const clearanceMeters = totalClearanceRate * dtHours;
+      if (!cell.isRiver) {
+        // Overland runoff on dry ground / city streets
+        const effectiveInfiltration = cell.isRoad || cell.landType === 'urban_high'
+          ? Math.min(2.0, cell.infiltrationK)
+          : cell.infiltrationK;
+        
+        const activeDrainage = cell.isObstructed ? 0 : cell.drainageRate;
+        const totalClearanceRate = (activeDrainage + effectiveInfiltration) / 1000.0; // m/hr
+        const clearanceMeters = totalClearanceRate * dtHours;
 
-      let finalH = Math.max(0.0, postFlowH - Math.min(postFlowH, clearanceMeters));
-      if (finalH < 0.003) finalH = 0.0;
+        let finalH = Math.max(0.0, postFlowH - Math.min(postFlowH, clearanceMeters));
 
-      cell.h = parseFloat(finalH.toFixed(3));
-      cell.dh_dt = dtHours > 0 ? (cell.h - cell.prevH) / dtHours : 0;
+        // Open boundary condition for land edges: free runoff cascade prevents pooling at boundary wall
+        if (isPerimeter && finalH < 0.08) {
+          finalH = 0.0;
+        } else if (finalH < 0.003) {
+          finalH = 0.0;
+        }
 
-      // Risk Thresholds:
-      // Safe: H < 0.05m
-      // Warning: 0.05m <= H < 0.35m
-      // Critical: H >= 0.35m or rapid rise
-      if (cell.h >= 0.35 || (cell.h >= 0.15 && cell.dh_dt > 0.18)) {
+        cell.h = parseFloat((isNaN(finalH) || !isFinite(finalH) ? 0.0 : Math.min(15.0, finalH)).toFixed(3));
+      } else {
+        // Interior river / water body cell:
+        // Hydrostatic equilibrium baseline. Surplus city runoff routes out.
+        let waterBodyH = Math.max(baseDepth, postFlowH);
+        if (waterBodyH > baseDepth) {
+          const excess = waterBodyH - baseDepth;
+          waterBodyH = baseDepth + excess * Math.max(0.0, 1.0 - dtHours * 2.0);
+        }
+        cell.h = parseFloat((isNaN(waterBodyH) || !isFinite(waterBodyH) ? baseDepth : Math.min(15.0, waterBodyH)).toFixed(3));
+      }
+
+      const riseRate = dtHours > 0 ? (cell.h - cell.prevH) / dtHours : 0;
+      cell.dh_dt = isNaN(riseRate) || !isFinite(riseRate) ? 0 : parseFloat(riseRate.toFixed(3));
+
+      // Risk Thresholds (Evaluated only on city / asset land):
+      // For rivers/ocean, flood risk is 0 unless surface rises above baseline depth
+      const floodOverGround = cell.isRiver ? Math.max(0.0, cell.h - baseDepth) : cell.h;
+
+      if (floodOverGround >= 0.35 || (floodOverGround >= 0.15 && cell.dh_dt > 0.18)) {
         cell.risk = 'critical';
         criticalCount++;
         affectedPopulation += cell.population;
-      } else if (cell.h >= 0.05) {
+      } else if (floodOverGround >= 0.05) {
         cell.risk = 'warning';
         warningCount++;
       } else {
@@ -154,8 +206,8 @@ export function simulateStep(
         safeCount++;
       }
 
-      totalWaterVolumeM3 += cell.h * CELL_AREA_M2;
-      maxDepthM = Math.max(maxDepthM, cell.h);
+      totalWaterVolumeM3 += (cell.isRiver ? Math.max(0, cell.h - baseDepth) : cell.h) * CELL_AREA_M2;
+      maxDepthM = Math.max(maxDepthM, floodOverGround);
     }
   }
 

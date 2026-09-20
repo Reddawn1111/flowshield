@@ -89,21 +89,26 @@ export async function fetchOverpassData(bbox: BoundingBox): Promise<OverpassResp
     console.warn('Official OSM API query failed or timed out, attempting Overpass API:', osmErr);
   }
 
-  // 3. SECONDARY SOURCE: Overpass API endpoints
-  const query = `[out:json][timeout:20];
+  // 3. SECONDARY SOURCE: Overpass API endpoints with expanded memory and relation extraction
+  const query = `[out:json][timeout:50][maxsize:1073741824];
 (
   way["building"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
-  way["highway"~"primary|secondary|tertiary|trunk|motorway|residential"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
+  relation["building"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
+  way["highway"~"primary|secondary|tertiary|trunk|motorway|residential|unclassified|service|pedestrian|living_street"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
+  way["railway"~"rail|light_rail|subway|tram"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
   way["natural"~"water|bay|coastline"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
+  relation["natural"="water"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
   way["waterway"~"riverbank|dock|canal|river|stream"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
+  relation["waterway"~"riverbank|dock|canal|river"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
   way["water"~"lake|reservoir|basin|river|canal|dock|pond"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
   node["amenity"="hospital"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
   way["amenity"="hospital"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
   node["power"="substation"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
   node["railway"="station"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
 );
-(._; >;);
-out body qt 4000;`;
+out body;
+>;
+out skel qt;`;
 
   const endpoints = [
     'https://overpass-api.de/api/interpreter',
@@ -114,7 +119,7 @@ out body qt 4000;`;
   for (const endpoint of endpoints) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 12000);
+      const timeoutId = setTimeout(() => controller.abort(), 25000);
 
       const res = await fetch(endpoint, {
         method: 'POST',

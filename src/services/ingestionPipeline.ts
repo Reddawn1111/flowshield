@@ -17,7 +17,7 @@ export interface IngestionParams {
 export async function runIngestionPipeline(
   params: IngestionParams
 ): Promise<DigitalTwinDataset> {
-  const { lat, lon, name, boxSizeMeters = 1200, onProgress } = params;
+  const { lat, lon, name, boxSizeMeters = 800, onProgress } = params;
 
   // 1. Calculate Bounding Box around center (boxSizeMeters x boxSizeMeters)
   onProgress?.('Resolving WGS84 Geodetic Frame & Bounding Box...', 15);

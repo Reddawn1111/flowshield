@@ -43,7 +43,7 @@ const PRESET_LOCATIONS: PresetCard[] = [
     country: 'Tokyo, Japan',
     subtitle: 'Shibuya Valley & Station Basin',
     lat: 35.6595,
-    lon: 139.7006,
+    lon: 139.7005,
     terrainType: 'Topographic bowl & subterranean culverts',
   },
   {
@@ -79,9 +79,9 @@ export const MainMenuModal: React.FC<MainMenuModalProps> = ({
 }) => {
   // Target coordinates & metadata
   const [targetLat, setTargetLat] = useState<number>(35.6595);
-  const [targetLon, setTargetLon] = useState<number>(139.7006);
+  const [targetLon, setTargetLon] = useState<number>(139.7005);
   const [targetName, setTargetName] = useState<string>('Shibuya Crossing, Tokyo');
-  const [boxSizeMeters] = useState<number>(1200);
+  const [boxSizeMeters] = useState<number>(800);
 
   // Search & Geocoding
   const [searchQuery, setSearchQuery] = useState<string>('');

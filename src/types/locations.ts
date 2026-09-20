@@ -26,7 +26,7 @@ export const LOCATION_PROFILES: LocationProfile[] = [
     country: 'Tokyo, Japan',
     coordinates: {
       lat: 35.6595,
-      lon: 139.7006,
+      lon: 139.7005,
       elevationM: 16.2,
     },
     elevationProfile: 'Topographic Valley Basin (Dogenzaka to Miyamasuzaka)',
