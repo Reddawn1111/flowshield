@@ -18,12 +18,45 @@ import { MainMenuModal } from './components/HUD/MainMenuModal';
 
 export const App: React.FC = () => {
   // Current Location
-  const [currentLocationName, setCurrentLocationName] = useState<string>('Shibuya Crossing, Tokyo');
-  const [currentLocationId, setCurrentLocationId] = useState<string>('shibuya');
+  const [currentLocationName, setCurrentLocationName] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search);
+      const city = p.get('city');
+      if (city) return city;
+      const loc = p.get('loc');
+      if (loc) {
+        const found = LOCATION_PROFILES.find(l => l.id.toLowerCase() === loc.toLowerCase());
+        if (found) return found.name;
+        return loc.charAt(0).toUpperCase() + loc.slice(1);
+      }
+    }
+    return 'Shibuya Crossing, Tokyo';
+  });
+
+  const [currentLocationId, setCurrentLocationId] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search);
+      const loc = p.get('loc');
+      if (loc && LOCATION_PROFILES.some(l => l.id.toLowerCase() === loc.toLowerCase())) {
+        return loc.toLowerCase();
+      }
+    }
+    return 'shibuya';
+  });
   const [isMainMenuOpen, setIsMainMenuOpen] = useState<boolean>(false);
 
   // Grid State (90x90 = 8,100 columns)
-  const [gridState, setGridState] = useState<GridState>(() => generateTerrain(90, 90, 'shibuya'));
+  const [gridState, setGridState] = useState<GridState>(() => {
+    let loc = 'shibuya';
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search);
+      const urlLoc = p.get('loc');
+      if (urlLoc && LOCATION_PROFILES.some(l => l.id.toLowerCase() === urlLoc.toLowerCase())) {
+        loc = urlLoc.toLowerCase();
+      }
+    }
+    return generateTerrain(90, 90, loc);
+  });
   const [terrainVersion, setTerrainVersion] = useState<number>(0);
   const baseGridRef = useRef<GridState>(gridState);
   const gridStateRef = useRef<GridState>(gridState);
@@ -72,8 +105,8 @@ export const App: React.FC = () => {
         if (typeof args.riverSurge === 'number' && args.riverSurge >= 0) {
           setRiverSurge(Math.round(args.riverSurge));
         }
-        if (typeof args.locationId === 'string' && args.locationId !== currentLocationId) {
-          handleSelectLocation(args.locationId);
+        if (typeof args.locationId === 'string' && (args.locationId !== currentLocationId || args.cityName)) {
+          handleSelectLocation(args.locationId, args.cityName);
         }
         return;
       }
@@ -86,8 +119,8 @@ export const App: React.FC = () => {
         if (typeof data.riverSurge === 'number' && data.riverSurge >= 0) {
           setRiverSurge(Math.round(data.riverSurge));
         }
-        if (typeof data.locationId === 'string' && data.locationId !== currentLocationId) {
-          handleSelectLocation(data.locationId);
+        if (typeof data.locationId === 'string' && (data.locationId !== currentLocationId || data.cityName)) {
+          handleSelectLocation(data.locationId, data.cityName);
         }
       }
     };
@@ -270,12 +303,20 @@ export const App: React.FC = () => {
   }, []);
 
   // Handle Location Switch from Main Menu
-  const handleSelectLocation = (locId: string) => {
+  const handleSelectLocation = (locId: string, customName?: string) => {
     setCurrentLocationId(locId);
     setIsRunning(false);
     setCurrentHour(0);
 
     const locProfile = LOCATION_PROFILES.find(l => l.id === locId);
+    if (customName) {
+      setCurrentLocationName(customName);
+    } else if (locProfile) {
+      setCurrentLocationName(locProfile.name);
+    } else {
+      setCurrentLocationName(locId.charAt(0).toUpperCase() + locId.slice(1));
+    }
+
     const fresh = generateTerrain(90, 90, locId);
     baseGridRef.current = fresh;
     setGridState(fresh);

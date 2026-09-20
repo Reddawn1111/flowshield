@@ -9,6 +9,7 @@
     "dev:streamlit": "python -m streamlit run flowshield/app.py --server.port 8501 --server.headless true",
     "dev:all": "concurrently --kill-others-on-fail --prefix-colors \"cyan,magenta\" --names \"REACT,STREAMLIT\" \"npm run dev:react\" \"npm run dev:streamlit\"",
     "build": "tsc && vite build",
+    "postbuild": "node -e \"const fs=require('fs'); ['flowshield/static/3d','static/3d'].forEach(dest => fs.cpSync('dist', dest, {recursive: true, force: true}));\"",
     "start": "python -m streamlit run flowshield/app.py",
     "preview": "vite preview"
   },
