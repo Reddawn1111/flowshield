@@ -1,4 +1,4 @@
-import { Cell, CriticalAsset, GridState, LandType, MetroLine, RoadFeature } from '../types/simulation';
+import { Cell, CriticalAsset, GridState, LandType, MetroLine, RoadFeature, RailwayFeature } from '../types/simulation';
 import { DigitalTwinDataset } from '../utils/GeoTransformer';
 
 export type { DigitalTwinDataset };
@@ -109,6 +109,34 @@ function findOpenCorridorPath(
 }
 
 /**
+ * Chaikin's corner-cutting algorithm for smooth, natural curved transit trajectories
+ * Eliminates 90-degree right-angle stair-steps across grid cells.
+ */
+function smoothPolyline(points: { x: number; y: number }[], iterations = 2): { x: number; y: number }[] {
+  if (points.length < 3) return points;
+  let current = points;
+  for (let it = 0; it < iterations; it++) {
+    const next: { x: number; y: number }[] = [];
+    next.push(current[0]);
+    for (let i = 0; i < current.length - 1; i++) {
+      const p0 = current[i];
+      const p1 = current[i + 1];
+      next.push({
+        x: parseFloat((0.75 * p0.x + 0.25 * p1.x).toFixed(3)),
+        y: parseFloat((0.75 * p0.y + 0.25 * p1.y).toFixed(3)),
+      });
+      next.push({
+        x: parseFloat((0.25 * p0.x + 0.75 * p1.x).toFixed(3)),
+        y: parseFloat((0.25 * p0.y + 0.75 * p1.y).toFixed(3)),
+      });
+    }
+    next.push(current[current.length - 1]);
+    current = next;
+  }
+  return current;
+}
+
+/**
  * loadTerrainData Bridge Callback
  * Converts strongly-typed DigitalTwinDataset into standard GridState for Scene3D & physics simulation.
  */
@@ -154,71 +182,77 @@ export function loadTerrainData(dataset: DigitalTwinDataset): GridState {
     grid.push(row);
   }
 
+  const isShibuyaLocation = /shibuya|渋谷/i.test(dataset.center.name) ||
+    (Math.abs(dataset.center.lat - 35.659) < 0.02 && Math.abs(dataset.center.lon - 139.700) < 0.02);
+
   // 2. Identify Ocean Water Bodies from DEM & Perimeter Flood-Fill
-  // Only execute for genuine coastal cities where the diorama boundary meets open sea (at least 10 sea-level border cells)
+  // Only execute for genuine coastal cities with valid DEM where the boundary meets open sea (at least 10 sea-level border cells)
   let seaLevelPerimeterCount = 0;
-  for (let x = 0; x < width; x++) {
-    if ((dataset.elevationGrid[0 * width + x] || 0) <= 0.05) seaLevelPerimeterCount++;
-    if ((dataset.elevationGrid[(height - 1) * width + x] || 0) <= 0.05) seaLevelPerimeterCount++;
-  }
-  for (let y = 1; y < height - 1; y++) {
-    if ((dataset.elevationGrid[y * width + 0] || 0) <= 0.05) seaLevelPerimeterCount++;
-    if ((dataset.elevationGrid[y * width + (width - 1)] || 0) <= 0.05) seaLevelPerimeterCount++;
-  }
-
-  if (seaLevelPerimeterCount >= 10) {
-    const oceanQueue: [number, number][] = [];
-    const visitedOcean = new Uint8Array(width * height);
-
-    // Enqueue perimeter cells at sea level (rawElev <= 0.05)
+  const hasValidDEM = !!(dataset.elevationGrid && dataset.elevationGrid.length >= width * height);
+  if (hasValidDEM && !isShibuyaLocation) {
     for (let x = 0; x < width; x++) {
-      const topIdx = 0 * width + x;
-      if ((dataset.elevationGrid[topIdx] || 0) <= 0.05) {
-        oceanQueue.push([x, 0]);
-        visitedOcean[topIdx] = 1;
-      }
-      const btmIdx = (height - 1) * width + x;
-      if ((dataset.elevationGrid[btmIdx] || 0) <= 0.05) {
-        oceanQueue.push([x, height - 1]);
-        visitedOcean[btmIdx] = 1;
-      }
+      if (dataset.elevationGrid![0 * width + x] <= 0.05) seaLevelPerimeterCount++;
+      if (dataset.elevationGrid![(height - 1) * width + x] <= 0.05) seaLevelPerimeterCount++;
     }
     for (let y = 1; y < height - 1; y++) {
-      const leftIdx = y * width + 0;
-      if ((dataset.elevationGrid[leftIdx] || 0) <= 0.05) {
-        oceanQueue.push([0, y]);
-        visitedOcean[leftIdx] = 1;
-      }
-      const rightIdx = y * width + (width - 1);
-      if ((dataset.elevationGrid[rightIdx] || 0) <= 0.05) {
-        oceanQueue.push([width - 1, y]);
-        visitedOcean[rightIdx] = 1;
-      }
+      if (dataset.elevationGrid![y * width + 0] <= 0.05) seaLevelPerimeterCount++;
+      if (dataset.elevationGrid![y * width + (width - 1)] <= 0.05) seaLevelPerimeterCount++;
     }
 
-    let oceanHead = 0;
-    while (oceanHead < oceanQueue.length) {
-      const [ox, oy] = oceanQueue[oceanHead++];
-      const oCell = grid[oy][ox];
-      oCell.isRiver = true;
-      oCell.landType = 'river';
-      oCell.terrainZ = -2.0;
-      oCell.h = 2.0;
-      oCell.baseDepth = 2.0;
-      oCell.prevH = 2.0;
-      oCell.drainageRate = 0.0;
-      oCell.baseDrainage = 0.0;
-      oCell.infiltrationK = 0.0;
+    if (seaLevelPerimeterCount >= 10) {
+      const oceanQueue: [number, number][] = [];
+      const visitedOcean = new Uint8Array(width * height);
 
-      const dirs = [[0, 1], [0, -1], [1, 0], [-1, 0]];
-      for (const [ddx, ddy] of dirs) {
-        const nx = ox + ddx;
-        const ny = oy + ddy;
-        if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-          const nIdx = ny * width + nx;
-          if (!visitedOcean[nIdx] && (dataset.elevationGrid[nIdx] || 0) <= 0.05) {
-            visitedOcean[nIdx] = 1;
-            oceanQueue.push([nx, ny]);
+      // Enqueue perimeter cells at sea level (rawElev <= 0.05)
+      for (let x = 0; x < width; x++) {
+        const topIdx = 0 * width + x;
+        if (dataset.elevationGrid![topIdx] <= 0.05) {
+          oceanQueue.push([x, 0]);
+          visitedOcean[topIdx] = 1;
+        }
+        const btmIdx = (height - 1) * width + x;
+        if (dataset.elevationGrid![btmIdx] <= 0.05) {
+          oceanQueue.push([x, height - 1]);
+          visitedOcean[btmIdx] = 1;
+        }
+      }
+      for (let y = 1; y < height - 1; y++) {
+        const leftIdx = y * width + 0;
+        if (dataset.elevationGrid![leftIdx] <= 0.05) {
+          oceanQueue.push([0, y]);
+          visitedOcean[leftIdx] = 1;
+        }
+        const rightIdx = y * width + (width - 1);
+        if (dataset.elevationGrid![rightIdx] <= 0.05) {
+          oceanQueue.push([width - 1, y]);
+          visitedOcean[rightIdx] = 1;
+        }
+      }
+
+      let oceanHead = 0;
+      while (oceanHead < oceanQueue.length) {
+        const [ox, oy] = oceanQueue[oceanHead++];
+        const oCell = grid[oy][ox];
+        oCell.isRiver = true;
+        oCell.landType = 'river';
+        oCell.terrainZ = -2.0;
+        oCell.h = 2.0;
+        oCell.baseDepth = 2.0;
+        oCell.prevH = 2.0;
+        oCell.drainageRate = 0.0;
+        oCell.baseDrainage = 0.0;
+        oCell.infiltrationK = 0.0;
+
+        const dirs = [[0, 1], [0, -1], [1, 0], [-1, 0]];
+        for (const [ddx, ddy] of dirs) {
+          const nx = ox + ddx;
+          const ny = oy + ddy;
+          if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+            const nIdx = ny * width + nx;
+            if (!visitedOcean[nIdx] && dataset.elevationGrid![nIdx] <= 0.05) {
+              visitedOcean[nIdx] = 1;
+              oceanQueue.push([nx, ny]);
+            }
           }
         }
       }
@@ -227,7 +261,7 @@ export function loadTerrainData(dataset: DigitalTwinDataset): GridState {
 
   // 3. Rasterize Pre-Existing Water Bodies (Natural Rivers, Bays, Reservoirs, Canals)
   // Process so inland water bodies define the physical geographic landscape!
-  if (dataset.waterBodies) {
+  if (dataset.waterBodies && !isShibuyaLocation) {
     for (const water of dataset.waterBodies) {
       const isPolygonCandidate =
         (water.isClosed || water.points.length >= 6) &&
@@ -406,6 +440,22 @@ export function loadTerrainData(dataset: DigitalTwinDataset): GridState {
     }
   }
 
+  // Option A for Shibuya: Assign subterranean culvert drainage capacity along the underground conduit corridor
+  if (isShibuyaLocation) {
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const nx = x / width;
+        const ny = y / height;
+        const riverCenter = 0.50 + 0.04 * Math.sin(ny * Math.PI * 2.0);
+        if (Math.abs(nx - riverCenter) < 0.038 && ny > 0.28) {
+          const cell = grid[y][x];
+          cell.drainageRate = 45.0;
+          cell.baseDrainage = 45.0;
+        }
+      }
+    }
+  }
+
   // 3. Rasterize Road Vectors
   // Roads establish corridors for movement, drainage, and bridges across water
   for (const road of dataset.roads) {
@@ -578,6 +628,12 @@ export function loadTerrainData(dataset: DigitalTwinDataset): GridState {
   // 6. Build Metro Transit Line connecting stations along open road corridors
   // 100% guarantees the metro line NEVER cuts through buildings!
   const metroLines: MetroLine[] = [];
+  const hasSubway = dataset.railways?.some(r => r.type === 'subway' || r.isUnderground);
+  const isUnderground = hasSubway ||
+    dataset.center.name.toLowerCase().includes('shibuya') ||
+    dataset.center.name.toLowerCase().includes('subway') ||
+    dataset.center.name.toLowerCase().includes('metro');
+
   if (metroStations.length >= 2) {
     const fullPath: { x: number; y: number }[] = [];
     for (let i = 0; i < metroStations.length - 1; i++) {
@@ -592,10 +648,81 @@ export function loadTerrainData(dataset: DigitalTwinDataset): GridState {
       metroLines.push({
         id: 'transit_main_line',
         name: `${dataset.center.name} Rapid Transit Line`,
+        type: isUnderground ? 'subway' : 'rail',
+        isUnderground,
         stations: metroStations.map(s => s.id),
-        path: fullPath,
+        path: smoothPolyline(fullPath, 3),
         isOperational: true,
       });
+    }
+  }
+
+  // 6B. Direct nearby river inflow flux entry to diorama boundary cells closest to external river's trajectory
+  if (dataset.riverInflowStatus?.type === 'nearby' && dataset.riverInflowStatus.trajectory) {
+    const { boundaryCell } = dataset.riverInflowStatus.trajectory;
+    const bx = Math.max(0, Math.min(width - 1, boundaryCell.x));
+    const by = Math.max(0, Math.min(height - 1, boundaryCell.y));
+
+    for (let d = -1; d <= 1; d++) {
+      const cx = Math.max(0, Math.min(width - 1, bx + (by === 0 || by === height - 1 ? d : 0)));
+      const cy = Math.max(0, Math.min(height - 1, by + (bx === 0 || bx === width - 1 ? d : 0)));
+      const targetCell = grid[cy][cx];
+      targetCell.isRiver = true;
+      if (targetCell.buildingZ === 0) {
+        targetCell.landType = 'river';
+      }
+    }
+  }
+
+  // 6B. Shoreline Boundary Laplacian / Box Smoothing Pass
+  const smoothedTerrainZ = new Float32Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const cell = grid[y][x];
+      smoothedTerrainZ[idx] = cell.terrainZ;
+
+      // Determine if cell is on or adjacent to water boundary
+      let isShoreBoundary = false;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+            if (grid[ny][nx].isRiver !== cell.isRiver) {
+              isShoreBoundary = true;
+              break;
+            }
+          }
+        }
+        if (isShoreBoundary) break;
+      }
+
+      if (isShoreBoundary) {
+        let weightedSum = 0;
+        let totalWeight = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+              const weight = (dx === 0 && dy === 0) ? 2.0 : 1.0;
+              weightedSum += grid[ny][nx].terrainZ * weight;
+              totalWeight += weight;
+            }
+          }
+        }
+        smoothedTerrainZ[idx] = weightedSum / totalWeight;
+      }
+    }
+  }
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const cell = grid[y][x];
+      cell.terrainZ = parseFloat(smoothedTerrainZ[idx].toFixed(2));
     }
   }
 
@@ -612,7 +739,10 @@ export function loadTerrainData(dataset: DigitalTwinDataset): GridState {
     assets,
     metroLines,
     roads: dataset.roads,
+    railways: dataset.railways,
     spanMetersX: spanX,
     spanMetersZ: spanZ,
+    bboxSpanKm: dataset.bboxSpanKm,
+    riverInflowStatus: dataset.riverInflowStatus,
   };
 }

@@ -146,8 +146,8 @@ export function createTerrainTexture(gridState: GridState): THREE.CanvasTexture 
 
   // 3. Urban Road Network: Render authentic vector road corridors
   ctx.save();
-  const spanX = 1200; // Total bounding box span in meters
-  const spanZ = 1200;
+  const spanX = gridState.spanMetersX || 1200; // Total bounding box span in meters
+  const spanZ = gridState.spanMetersZ || 1200;
 
   if (gridState.roads && gridState.roads.length > 0) {
     ctx.lineCap = 'round';

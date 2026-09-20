@@ -81,13 +81,25 @@ export const MainMenuModal: React.FC<MainMenuModalProps> = ({
   const [targetLat, setTargetLat] = useState<number>(35.6595);
   const [targetLon, setTargetLon] = useState<number>(139.7005);
   const [targetName, setTargetName] = useState<string>('Shibuya Crossing, Tokyo');
-  const [boxSizeMeters] = useState<number>(800);
+  const [boxSizeMeters, setBoxSizeMeters] = useState<number>(1200);
 
   // Search & Geocoding
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [searchResults, setSearchResults] = useState<GeocodingResult[]>([]);
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const debounceRef = useRef<number | null>(null);
+  const searchContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Close search dropdown on click outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(e.target as Node)) {
+        setSearchResults([]);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Ingestion Pipeline State
   const [isIngesting, setIsIngesting] = useState<boolean>(false);
@@ -212,7 +224,7 @@ export const MainMenuModal: React.FC<MainMenuModalProps> = ({
         </div>
 
         {/* Search & Geocoding Bar */}
-        <div className="px-8 pt-4 pb-2 relative z-30">
+        <div className="px-8 pt-4 pb-2 relative z-30" ref={searchContainerRef}>
           <div className="relative">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
             <input
@@ -225,20 +237,33 @@ export const MainMenuModal: React.FC<MainMenuModalProps> = ({
             {isSearching && (
               <Loader2 className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-cyan-400 animate-spin" />
             )}
+            {searchQuery && !isSearching && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery('');
+                  setSearchResults([]);
+                }}
+                className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-1 rounded-full hover:bg-slate-800 transition-colors"
+                title="Clear search"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
 
-            {/* Autocomplete Dropdown */}
+            {/* Autocomplete Dropdown - 100% Solid Opaque Background */}
             {searchResults.length > 0 && (
-              <div className="absolute top-full left-0 right-0 mt-2 bg-slate-900/98 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden z-40 max-h-60 overflow-y-auto">
+              <div className="absolute top-full left-0 right-0 mt-2 bg-[#0b0f19] border-2 border-cyan-500/40 rounded-2xl shadow-[0_25px_60px_rgba(0,0,0,0.98)] overflow-hidden z-50 max-h-72 overflow-y-auto divide-y divide-slate-800/80">
                 {searchResults.map((res) => (
                   <div
                     key={res.placeId}
                     onClick={() => handleSelectSearchResult(res)}
-                    className="px-4 py-3 hover:bg-cyan-500/10 cursor-pointer border-b border-slate-800/60 last:border-0 flex items-center justify-between group transition-colors"
+                    className="px-4 py-3 bg-[#0b0f19] hover:bg-cyan-950/80 cursor-pointer flex items-center justify-between group transition-colors"
                   >
-                    <div className="flex items-center gap-3">
-                      <MapPin className="w-4 h-4 text-cyan-400 group-hover:scale-110 transition-transform" />
-                      <div>
-                        <div className="text-sm font-bold text-slate-200 group-hover:text-cyan-300">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <MapPin className="w-4 h-4 text-cyan-400 group-hover:scale-110 transition-transform shrink-0" />
+                      <div className="min-w-0">
+                        <div className="text-sm font-bold text-slate-200 group-hover:text-cyan-300 truncate">
                           {res.name}
                         </div>
                         <div className="text-xs text-slate-400 truncate max-w-xl">
@@ -246,7 +271,7 @@ export const MainMenuModal: React.FC<MainMenuModalProps> = ({
                         </div>
                       </div>
                     </div>
-                    <span className="text-[11px] font-mono text-slate-500 bg-slate-950 px-2 py-1 rounded">
+                    <span className="text-[11px] font-mono text-slate-400 bg-slate-900 border border-slate-800 px-2 py-1 rounded shrink-0 ml-3">
                       {res.lat.toFixed(4)}°, {res.lon.toFixed(4)}°
                     </span>
                   </div>
@@ -285,13 +310,36 @@ export const MainMenuModal: React.FC<MainMenuModalProps> = ({
                   <span className="text-[10px] text-slate-500 block">LONGITUDE</span>
                   <span className="text-slate-200 font-bold">{targetLon.toFixed(5)}° E</span>
                 </div>
-                <div className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800">
-                  <span className="text-[10px] text-slate-500 block">BOUNDING BOX</span>
-                  <span className="text-cyan-400 font-bold">1.2 km × 1.2 km (1.44 km²)</span>
+
+                {/* Bounding Box Size Slider */}
+                <div className="col-span-2 p-3 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                      Bounding Box Span
+                    </span>
+                    <span className="text-cyan-400 font-bold text-xs">
+                      {(boxSizeMeters / 1000).toFixed(2)} km × {(boxSizeMeters / 1000).toFixed(2)} km ({((boxSizeMeters * boxSizeMeters) / 1000000).toFixed(2)} km²)
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={500}
+                    max={2500}
+                    step={100}
+                    value={boxSizeMeters}
+                    onChange={(e) => setBoxSizeMeters(Number(e.target.value))}
+                    className="w-full h-1.5 bg-slate-950 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                  />
+                  <div className="flex justify-between text-[9px] text-slate-500 font-mono">
+                    <span>500m (Core)</span>
+                    <span className="text-cyan-400 font-bold">{boxSizeMeters}m</span>
+                    <span>2.5km (Wide Basin)</span>
+                  </div>
                 </div>
-                <div className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800">
-                  <span className="text-[10px] text-slate-500 block">SIMULATION GRID</span>
-                  <span className="text-emerald-400 font-bold">90 × 90 (8,100 Cells)</span>
+
+                <div className="col-span-2 p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center justify-between">
+                  <span className="text-[10px] text-slate-500">SIMULATION RESOLUTION</span>
+                  <span className="text-emerald-400 font-bold">90 × 90 (8,100 Cells, ~{(boxSizeMeters / 90).toFixed(1)}m/cell)</span>
                 </div>
               </div>
             </div>

@@ -1,6 +1,11 @@
 import { createNoise2D } from 'simplex-noise';
 import { Cell, CriticalAsset, GridState, LandType, MetroLine } from '../types/simulation';
 
+function smoothstep(min: number, max: number, value: number): number {
+  const x = Math.max(0, Math.min(1, (value - min) / (max - min)));
+  return x * x * (3 - 2 * x);
+}
+
 export function generateTerrain(
   width: number = 90,
   height: number = 90,
@@ -414,13 +419,12 @@ export function generateTerrain(
         const m2 = (noiseDetail(nx * 6.5, ny * 6.5) + 1) * 0.5;
         terrainZ = 2.2 + ridgeElev + (m1 * 3.5) + (m2 * 1.5);
 
-        // Subterranean/surface Shibuya River culvert flowing south through the valley
+        // Subterranean Shibuya River culvert flowing south beneath the valley floor
+        // (Option A: Omitted entirely from 3D surface view, retained purely as an invisible subterranean drainage conduit)
         const riverCenter = 0.50 + 0.04 * Math.sin(ny * Math.PI * 2.0);
         const distToRiver = Math.abs(nx - riverCenter);
-        isRiver = distToRiver < 0.038 && ny > 0.28;
-        if (isRiver) {
-          terrainZ = Math.max(0.8, terrainZ - 2.2);
-        }
+        const isSubterraneanCulvert = distToRiver < 0.038 && ny > 0.28;
+        isRiver = false; // Authentic Shibuya Crossing: clean dry pavement, no spurious open surface river trench
 
         // Road Network: Shibuya Scramble Crossing 5-way junction at (x=46, y=47)
         const isAvenueY = y === 22 || y === 47 || y === 72;
@@ -430,19 +434,16 @@ export function generateTerrain(
         // Dogenzaka / Inokashira diagonal arterial
         const isDiagonalRoad = Math.abs((x - 46) - (y - 47) * 0.8) < 1.4 && x < 54;
 
-        isRoadCell = (isAvenueX || isAvenueY || isStreetX || isStreetY || isDiagonalRoad) && !isRiver;
+        isRoadCell = (isAvenueX || isAvenueY || isStreetX || isStreetY || isDiagonalRoad);
 
-        // Urban Zoning
+        // Urban Zoning: scale building bounding box to cover the road network across the diorama
         const distToScramble = Math.hypot(nx - 0.48, ny - 0.50);
-        const isCommercialWard = distToScramble < 0.32;
+        const isCommercialWard = nx >= 0.04 && nx <= 0.96 && ny >= 0.04 && ny <= 0.96;
 
-        if (isRiver) {
-          landType = 'river';
-          drainageRate = 45.0;
-          infiltrationK = 0.0;
-        } else if (isRoadCell) {
+        if (isRoadCell) {
           landType = 'road';
-          drainageRate = 22.0;
+          // Elevated subterranean drainage capacity directly above the culvert path
+          drainageRate = isSubterraneanCulvert ? 45.0 : 22.0;
           infiltrationK = 2.0;
           population = 40;
           terrainZ = Math.max(0.7, terrainZ - 0.12);
@@ -485,13 +486,13 @@ export function generateTerrain(
               population = 85;
             }
           }
-          drainageRate = 18.0;
+          drainageRate = isSubterraneanCulvert ? 45.0 : 18.0;
           infiltrationK = 1.0;
         } else {
           // Shoto & Aoyama outer residential heights (green slopes, low density)
           landType = 'green';
           buildingZ = 0.0;
-          drainageRate = 28.0;
+          drainageRate = isSubterraneanCulvert ? 45.0 : 28.0;
           infiltrationK = 20.0;
           population = 10;
         }
@@ -510,7 +511,27 @@ export function generateTerrain(
         // Natural spine elevation along Broadway axis (nx ~ 0.50)
         const spineDist = Math.abs(nx - 0.50);
         const spineH = Math.max(0, 1.0 - spineDist * 3.5) * 4.5;
-        terrainZ = isRiver ? 0.6 : 1.5 + spineH + m1 * 1.5;
+        const landElev = 1.5 + spineH + m1 * 1.5;
+        const waterElev = 0.6;
+
+        // Smooth continuous distance tapering to eliminate staircased cliff shoreline edges
+        let shoreBlend = 1.0; // 0 = water, 1 = dry land
+        if (nx < 0.26 && ny > 0.10) {
+          // West Hudson shore
+          shoreBlend = Math.min(shoreBlend, smoothstep(0.20, 0.25, nx));
+        }
+        if (nx > 0.72 && ny > 0.12) {
+          // East River shore
+          shoreBlend = Math.min(shoreBlend, 1.0 - smoothstep(0.74, 0.78, nx));
+        }
+        if (ny > 0.78 && (nx < 0.38 || nx > 0.62)) {
+          // Battery tip
+          shoreBlend = Math.min(shoreBlend, 1.0 - smoothstep(0.80, 0.86, ny));
+        }
+
+        terrainZ = isRiver
+          ? waterElev
+          : waterElev + (landElev - waterElev) * Math.max(0.2, shoreBlend);
 
         // Manhattan Grid (Avenues along Y, numbered streets along X)
         const isAve = x === 28 || x === 38 || x === 50 || x === 62 || x === 72;
@@ -519,7 +540,8 @@ export function generateTerrain(
         isRoadCell = (isAve || isSt || isFDRHighway) && !isRiver;
 
         const distToWTC = Math.hypot(nx - 0.44, ny - 0.48);
-        const isDowntown = nx >= 0.26 && nx <= 0.72 && ny >= 0.20 && ny <= 0.80;
+        // Urban Zoning: scale building bounding box to cover the full peninsula between Hudson & East rivers
+        const isDowntown = nx >= 0.18 && nx <= 0.82 && ny >= 0.06 && ny <= 0.88;
 
         if (isRiver) {
           landType = 'river';
@@ -580,7 +602,18 @@ export function generateTerrain(
         isRiver = isBay || isSingRiver;
 
         const m1 = (noiseMacro(nx * 2.0, ny * 2.0) + 1) * 0.5;
-        terrainZ = isRiver ? 0.7 : 1.2 + m1 * 2.5;
+        const landElev = 1.2 + m1 * 2.5;
+        const waterElev = 0.7;
+
+        // Continuous shoreline smoothstep tapering around Marina Bay and Singapore River
+        const bayShoreFactor = smoothstep(0.17, 0.23, bayDist);
+        const riverDist = Math.abs(nx - riverCenter);
+        const riverShoreFactor = smoothstep(0.025, 0.052, riverDist);
+        const shoreBlend = Math.min(bayShoreFactor, ny < 0.55 ? riverShoreFactor : 1.0);
+
+        terrainZ = isRiver
+          ? waterElev
+          : waterElev + (landElev - waterElev) * Math.max(0.25, shoreBlend);
 
         // Boulevard grid around the bay
         const isAvenueX = x === 22 || x === 42 || x === 60 || x === 74;
@@ -602,8 +635,8 @@ export function generateTerrain(
           landType = 'urban_high';
           buildingZ = 17.5;
           population = 450;
-        } else if (nx >= 0.28 && nx <= 0.45 && ny >= 0.36 && ny <= 0.65) {
-          // CBD Banking Skyscraper District (Raffles Place)
+        } else if (nx >= 0.06 && nx <= 0.94 && ny >= 0.06 && ny <= 0.94) {
+          // CBD Banking Skyscraper District & Marina Urban Core
           const bldgNoise = (noiseDetail(nx * 12.0, ny * 12.0) + 1) * 0.5;
           landType = 'urban_high';
           buildingZ = 8.0 + bldgNoise * 8.0;
@@ -630,11 +663,13 @@ export function generateTerrain(
         const riverCenter = 0.26 + 0.14 * Math.sin(ny * Math.PI * 2.3);
         const distToRiver = Math.abs(nx - riverCenter);
         isRiver = distToRiver < 0.045 && ny > 0.10;
-        const riverCarve = isRiver ? (0.045 - distToRiver) * 30.0 : 0.0;
+        const riverTaper = smoothstep(0.045, 0.075, distToRiver);
+        const riverCarve = (1.0 - riverTaper) * 3.2;
 
         const basinDist = Math.hypot(nx - 0.25, ny - 0.76);
         const isBasin = basinDist < 0.24;
-        const basinCarve = isBasin ? Math.cos((basinDist / 0.24) * (Math.PI / 2)) * 3.6 : 0.0;
+        const basinTaper = smoothstep(0.18, 0.26, basinDist);
+        const basinCarve = (1.0 - basinTaper) * 3.6;
 
         terrainZ = (slope * 12.0) + (m1 * 7.5) + (m2 * 2.5) - riverCarve - basinCarve;
         terrainZ = Math.max(0.8, parseFloat(terrainZ.toFixed(2)));
@@ -646,7 +681,8 @@ export function generateTerrain(
         isRoadCell = (isAvenueX || isAvenueY || isStreetX || isStreetY) && !isRiver;
 
         const urbanCenterDist = Math.hypot(nx - 0.48, ny - 0.52);
-        const isUrbanDistrict = urbanCenterDist < 0.38 && terrainZ < 14.0 && !isBasin;
+        // Urban Zoning: scale building bounding box across the plain along road avenues
+        const isUrbanDistrict = nx >= 0.05 && nx <= 0.95 && ny >= 0.05 && ny <= 0.95 && terrainZ < 15.0 && !isBasin;
 
         if (isRiver) {
           landType = 'river';
@@ -656,25 +692,15 @@ export function generateTerrain(
           landType = 'road';
           drainageRate = 22.0;
           infiltrationK = 2.0;
-          population = 25;
+          population = 35;
           terrainZ = Math.max(0.7, terrainZ - 0.12);
-        } else if (isBasin && basinDist < 0.18) {
-          landType = 'green';
-          drainageRate = 12.0;
-          infiltrationK = 18.0;
-          population = 10;
-        } else if (!isUrbanDistrict) {
-          landType = 'green';
-          drainageRate = 28.0;
-          infiltrationK = 22.0;
-          population = 5;
-        } else {
+        } else if (isUrbanDistrict) {
           const bldgNoise = (noiseDetail(nx * 14.0, ny * 14.0) + 1) * 0.5;
           const parcelHash = ((x * 73856093) ^ (y * 19349663)) % 100;
-          if (parcelHash < 32) {
+          if (parcelHash < 20) {
             landType = 'green';
             buildingZ = 0.0;
-            population = 30;
+            population = 15;
           } else if (urbanCenterDist < 0.20 && bldgNoise > 0.45) {
             landType = 'urban_high';
             buildingZ = 6.0 + Math.pow(bldgNoise, 2) * 12.0;
@@ -686,6 +712,16 @@ export function generateTerrain(
           }
           drainageRate = 16.0;
           infiltrationK = 2.0;
+        } else if (isBasin && basinDist < 0.18) {
+          landType = 'green';
+          drainageRate = 12.0;
+          infiltrationK = 18.0;
+          population = 10;
+        } else {
+          landType = 'green';
+          drainageRate = 28.0;
+          infiltrationK = 22.0;
+          population = 5;
         }
       }
 
@@ -726,6 +762,63 @@ export function generateTerrain(
       cells.push(cell);
     }
     grid.push(row);
+  }
+
+  // =========================================================================
+  // 3. BOUNDARY LAPLACIAN & BOX SMOOTHING PASS ON SHORELINE ELEVATIONS
+  // =========================================================================
+  // Smooths discrete quad transitions strictly on cells adjacent to water-land boundaries
+  const smoothedTerrainZ = new Float32Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const cell = grid[y][x];
+      smoothedTerrainZ[idx] = cell.terrainZ;
+
+      // Determine if cell is on or adjacent to water boundary
+      let isShoreBoundary = false;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+            if (grid[ny][nx].isRiver !== cell.isRiver) {
+              isShoreBoundary = true;
+              break;
+            }
+          }
+        }
+        if (isShoreBoundary) break;
+      }
+
+      if (isShoreBoundary) {
+        let weightedSum = 0;
+        let totalWeight = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+              const weight = (dx === 0 && dy === 0) ? 2.0 : 1.0;
+              weightedSum += grid[ny][nx].terrainZ * weight;
+              totalWeight += weight;
+            }
+          }
+        }
+        smoothedTerrainZ[idx] = weightedSum / totalWeight;
+      }
+    }
+  }
+
+  // Apply boundary smoothed elevations back to cell structures
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const cell = grid[y][x];
+      cell.terrainZ = parseFloat(Math.max(0.6, smoothedTerrainZ[idx]).toFixed(2));
+      cell.z = parseFloat((cell.terrainZ + cell.buildingZ).toFixed(2));
+    }
   }
 
   return { width, height, cells, grid, assets, metroLines };

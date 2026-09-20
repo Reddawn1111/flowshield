@@ -4,6 +4,8 @@ import { Activity, ShieldAlert, Waves, RotateCcw, HelpCircle, Globe, MapPin } fr
 interface HeaderProps {
   isRunning: boolean;
   currentLocationName: string;
+  viewMode: '3d' | '2d' | 'split';
+  onViewModeChange: (mode: '3d' | '2d' | 'split') => void;
   onResetScene: () => void;
   onOpenHelp: () => void;
   onOpenMainMenu: () => void;
@@ -12,6 +14,8 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({
   isRunning,
   currentLocationName,
+  viewMode,
+  onViewModeChange,
   onResetScene,
   onOpenHelp,
   onOpenMainMenu,
@@ -29,7 +33,7 @@ export const Header: React.FC<HeaderProps> = ({
               FLOWSHIELD
             </h1>
             <span className="text-[10px] uppercase font-bold tracking-widest px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
-              3D Hydrodynamic
+              3D & 2D GIS
             </span>
           </div>
           <p className="text-[11px] text-slate-400">
@@ -38,18 +42,58 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      {/* Center Location Pill */}
-      <button
-        onClick={onOpenMainMenu}
-        className="hidden md:flex items-center gap-2.5 bg-slate-900/90 hover:bg-slate-800/90 border border-cyan-500/40 hover:border-cyan-400 px-4 py-2 rounded-xl text-xs font-mono text-cyan-300 hover:text-white transition-all shadow-[0_0_15px_rgba(0,240,255,0.15)] pointer-events-auto group cursor-pointer"
-        title="Click to Change Location in Main Menu"
-      >
-        <MapPin className="w-4 h-4 text-cyan-400 group-hover:scale-110 transition-transform" />
-        <span className="font-bold tracking-wide">{currentLocationName}</span>
-        <span className="text-[10px] text-slate-400 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">
-          Switch Location
-        </span>
-      </button>
+      {/* Viewport Switcher Controls & Location Pill */}
+      <div className="flex items-center gap-2 pointer-events-auto">
+        {/* Viewport Switcher Controls */}
+        <div className="flex items-center p-1 bg-slate-900/90 backdrop-blur-md border border-cyan-500/40 rounded-xl font-mono text-xs shadow-xl">
+          <button
+            type="button"
+            onClick={() => onViewModeChange('3d')}
+            className={`px-3 py-1.5 rounded-lg font-bold transition-all ${
+              viewMode === '3d'
+                ? 'bg-cyan-500/25 text-cyan-300 border border-cyan-400/60 shadow-[0_0_12px_rgba(0,240,255,0.3)]'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            3D DIORAMA
+          </button>
+          <button
+            type="button"
+            onClick={() => onViewModeChange('2d')}
+            className={`px-3 py-1.5 rounded-lg font-bold transition-all ${
+              viewMode === '2d'
+                ? 'bg-cyan-500/25 text-cyan-300 border border-cyan-400/60 shadow-[0_0_12px_rgba(0,240,255,0.3)]'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            2D GIS MAP
+          </button>
+          <button
+            type="button"
+            onClick={() => onViewModeChange('split')}
+            className={`px-3 py-1.5 rounded-lg font-bold transition-all ${
+              viewMode === 'split'
+                ? 'bg-cyan-500/25 text-cyan-300 border border-cyan-400/60 shadow-[0_0_12px_rgba(0,240,255,0.3)]'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            SPLIT VIEW
+          </button>
+        </div>
+
+        {/* Center Location Pill */}
+        <button
+          onClick={onOpenMainMenu}
+          className="hidden md:flex items-center gap-2.5 bg-slate-900/90 hover:bg-slate-800/90 border border-slate-700/80 hover:border-cyan-400 px-3.5 py-2 rounded-xl text-xs font-mono text-cyan-300 hover:text-white transition-all shadow-lg pointer-events-auto group cursor-pointer"
+          title="Click to Change Location in Main Menu"
+        >
+          <MapPin className="w-4 h-4 text-cyan-400 group-hover:scale-110 transition-transform" />
+          <span className="font-bold tracking-wide max-w-[140px] truncate">{currentLocationName}</span>
+          <span className="text-[10px] text-slate-400 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">
+            Switch
+          </span>
+        </button>
+      </div>
 
       {/* Status & Quick Actions */}
       <div className="flex items-center gap-2 pointer-events-auto">

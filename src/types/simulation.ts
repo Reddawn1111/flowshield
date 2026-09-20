@@ -1,3 +1,5 @@
+import type { DamageReport } from '../engine/damageAssessment';
+
 export type LandType = 'urban_high' | 'urban_low' | 'residential' | 'green' | 'river' | 'road' | 'critical_asset';
 
 export type RiskLevel = 'safe' | 'warning' | 'critical';
@@ -17,6 +19,8 @@ export interface CriticalAsset {
 export interface MetroLine {
   id: string;
   name: string;
+  type?: 'subway' | 'rail' | 'light_rail' | 'tram';
+  isUnderground?: boolean;
   stations: string[];
   path: { x: number; y: number }[];
   isOperational: boolean;
@@ -51,6 +55,26 @@ export interface RoadFeature {
   points: Array<[number, number]>;
 }
 
+export interface RailwayFeature {
+  id: string;
+  type: 'rail' | 'subway' | 'light_rail' | 'tram';
+  isUnderground: boolean;
+  points: Array<[number, number]>;
+}
+
+export interface RiverInflowStatus {
+  active: boolean;
+  checking?: boolean;
+  type?: 'internal' | 'nearby' | 'checking';
+  name?: string;
+  distanceKm?: number;
+  tooltip?: string;
+  trajectory?: {
+    direction: 'north' | 'south' | 'east' | 'west';
+    boundaryCell: { x: number; y: number };
+  };
+}
+
 export interface GridState {
   width: number;
   height: number;
@@ -59,8 +83,11 @@ export interface GridState {
   assets: CriticalAsset[];
   metroLines: MetroLine[];
   roads?: RoadFeature[];
+  railways?: RailwayFeature[];
   spanMetersX?: number;
   spanMetersZ?: number;
+  bboxSpanKm?: number;
+  riverInflowStatus?: RiverInflowStatus;
 }
 
 export interface ScenarioPreset {
@@ -85,4 +112,6 @@ export interface SimulationAnalytics {
   metroOperational: boolean;
   cascadingAlerts: string[];
   maxDepthM: number;
+  /** Optional damage assessment pass result (Population Exposure + Economic Loss) */
+  damageReport?: DamageReport;
 }

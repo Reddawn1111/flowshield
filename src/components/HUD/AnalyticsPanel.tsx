@@ -1,5 +1,17 @@
 import React from 'react';
-import { Waves, Users, Clock, AlertOctagon, Zap, Hospital, Train, AlertTriangle, ShieldCheck } from 'lucide-react';
+import {
+  Waves,
+  Clock,
+  AlertOctagon,
+  Zap,
+  Hospital,
+  Train,
+  ShieldAlert,
+  Users,
+  DollarSign,
+  AlertTriangle,
+  Route,
+} from 'lucide-react';
 import { SimulationAnalytics } from '../../types/simulation';
 
 interface AnalyticsPanelProps {
@@ -9,15 +21,14 @@ interface AnalyticsPanelProps {
 export const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ analytics }) => {
   const {
     totalWaterVolumeM3,
-    affectedPopulation,
     timeToCriticalSec,
     safePct,
     warningPct,
     criticalPct,
     criticalAssets,
     metroOperational,
-    cascadingAlerts,
     maxDepthM,
+    damageReport,
   } = analytics;
 
   // Calculate infrastructure stats
@@ -35,6 +46,21 @@ export const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ analytics }) => 
     return `${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s`;
   };
 
+  // Format economic loss for display
+  const formatUSD = (usd: number): string => {
+    if (usd >= 1_000_000_000) return `$${(usd / 1_000_000_000).toFixed(2)}B`;
+    if (usd >= 1_000_000)     return `$${(usd / 1_000_000).toFixed(2)}M`;
+    if (usd >= 1_000)         return `$${(usd / 1_000).toFixed(1)}K`;
+    return `$${usd.toFixed(0)}`;
+  };
+
+  const displaced      = damageReport?.displacedCitizens ?? 0;
+  const lifeThreat     = damageReport?.lifeThreatenedCount ?? 0;
+  const lossUSD        = damageReport?.totalEconomicLossUSD ?? 0;
+  const impassableKm   = damageReport?.roadNetwork.impassableKm ?? 0;
+
+  const hasActiveDamage = lossUSD > 0 || displaced > 0;
+
   return (
     <div className="bg-slate-900/90 backdrop-blur-md border border-slate-800/90 p-3.5 rounded-2xl shadow-2xl flex flex-col gap-3 w-88">
       {/* Panel Header */}
@@ -48,7 +74,7 @@ export const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ analytics }) => 
         </span>
       </div>
 
-      {/* Metric Cards */}
+      {/* Metric Cards — Water Volume & Hazard Level */}
       <div className="grid grid-cols-2 gap-2">
         <div className="bg-slate-950/50 p-2.5 rounded-xl border border-slate-800/70 flex flex-col">
           <div className="flex items-center gap-1.5 text-slate-400 text-[10px]">
@@ -62,11 +88,73 @@ export const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ analytics }) => 
 
         <div className="bg-slate-950/50 p-2.5 rounded-xl border border-slate-800/70 flex flex-col">
           <div className="flex items-center gap-1.5 text-slate-400 text-[10px]">
-            <Users className="w-3 h-3 text-red-400" />
-            <span>Affected Pop.</span>
+            <ShieldAlert className="w-3 h-3 text-red-400" />
+            <span>Hazard Level</span>
           </div>
           <span className="text-base font-extrabold font-mono text-red-400 mt-1">
-            {affectedPopulation.toLocaleString()} <span className="text-[10px] text-slate-500 font-normal">citizens</span>
+            {criticalPct.toFixed(1)}% <span className="text-[10px] text-slate-500 font-normal">critical</span>
+          </span>
+        </div>
+      </div>
+
+      {/* ── NEW: Population Exposure Card ─────────────────────────────── */}
+      <div className={`p-2.5 rounded-xl border flex flex-col gap-1.5 ${
+        lifeThreat > 0
+          ? 'bg-red-950/40 border-red-500/40'
+          : displaced > 0
+          ? 'bg-amber-950/30 border-amber-500/30'
+          : 'bg-slate-950/40 border-slate-800/70'
+      }`}>
+        <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+          <Users className="w-3 h-3 text-slate-400" />
+          <span>Population Exposure</span>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          {/* Displaced */}
+          <div className="flex flex-col">
+            <span className="text-[9px] text-slate-500 uppercase tracking-wide">Displaced</span>
+            <span className={`text-sm font-extrabold font-mono ${displaced > 0 ? 'text-amber-400' : 'text-slate-500'}`}>
+              {displaced.toLocaleString()}
+            </span>
+            <span className="text-[9px] text-slate-600">H ≥ 0.30 m</span>
+          </div>
+          {/* Life-Threat */}
+          <div className="flex flex-col">
+            <span className="text-[9px] text-slate-500 uppercase tracking-wide flex items-center gap-0.5">
+              <AlertTriangle className="w-2.5 h-2.5 text-red-500" />
+              Life-Threat
+            </span>
+            <span className={`text-sm font-extrabold font-mono ${lifeThreat > 0 ? 'text-red-400 animate-pulse' : 'text-slate-500'}`}>
+              {lifeThreat.toLocaleString()}
+            </span>
+            <span className="text-[9px] text-slate-600">H ≥ 1.20 m</span>
+          </div>
+        </div>
+      </div>
+
+      {/* ── NEW: Economic Damage Card ──────────────────────────────────── */}
+      <div className={`p-2.5 rounded-xl border flex flex-col gap-1.5 ${
+        hasActiveDamage
+          ? 'bg-orange-950/30 border-orange-500/30'
+          : 'bg-slate-950/40 border-slate-800/70'
+      }`}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+            <DollarSign className="w-3 h-3 text-slate-400" />
+            <span>Economic Damage</span>
+          </div>
+          <span className={`text-sm font-extrabold font-mono ${lossUSD > 1_000_000 ? 'text-orange-400' : lossUSD > 0 ? 'text-amber-400' : 'text-slate-600'}`}>
+            {formatUSD(lossUSD)}
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5 text-[9px] text-slate-500">
+          <Route className="w-2.5 h-2.5 text-slate-600 flex-shrink-0" />
+          <span>
+            Road closures:{' '}
+            <span className={`font-mono font-semibold ${impassableKm > 0 ? 'text-amber-400' : 'text-slate-600'}`}>
+              {impassableKm.toFixed(1)} km
+            </span>
+            {' '}impassable
           </span>
         </div>
       </div>
@@ -124,23 +212,6 @@ export const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({ analytics }) => 
           </div>
         </div>
       </div>
-
-      {/* CASCADING FAILURE ALERTS BANNER */}
-      {cascadingAlerts.length > 0 && (
-        <div className="bg-red-500/15 border border-red-500/40 p-2.5 rounded-xl flex flex-col gap-1 animate-in fade-in duration-300">
-          <span className="text-[10px] font-bold text-red-400 uppercase tracking-wider flex items-center gap-1">
-            <AlertTriangle className="w-3.5 h-3.5 animate-bounce" />
-            Cascading Failure Incidents:
-          </span>
-          <div className="flex flex-col gap-1 max-h-24 overflow-y-auto pr-1">
-            {cascadingAlerts.map((alert, idx) => (
-              <p key={idx} className="text-[10px] text-red-200 leading-tight">
-                {alert}
-              </p>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* Risk Distribution Progress Bar */}
       <div className="flex flex-col gap-1">

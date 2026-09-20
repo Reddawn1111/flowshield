@@ -3,6 +3,10 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Cell, CriticalAsset, GridState, MetroLine } from '../types/simulation';
 import { createTerrainTexture } from '../engine/terrainTexture';
+import hospitalIconUrl from '../../Icons/Hospital.png';
+import powerIconUrl from '../../Icons/Powertation.png';
+import railwayIconUrl from '../../Icons/Railway.png';
+
 
 interface Scene3DProps {
   gridState: GridState;
@@ -90,7 +94,25 @@ export const Scene3D: React.FC<Scene3DProps> = ({
   const metroTubeMeshRef = useRef<THREE.Mesh | null>(null);
   const roadInfraGroupRef = useRef<THREE.Group | null>(null);
   const beaconsGroupRef = useRef<THREE.Group | null>(null);
-  const beaconMeshesRef = useRef<Map<string, { mesh: THREE.Mesh; asset: CriticalAsset }>>(new Map());
+  const beaconMeshesRef = useRef<Map<string, { mesh: THREE.Sprite; asset: CriticalAsset }>>(new Map());
+
+  // Textures for Critical Infrastructure Icons (from Icons folder)
+  const textureLoader = useMemo(() => new THREE.TextureLoader(), []);
+  const iconTextures = useMemo(() => {
+    const hospitalTex = textureLoader.load(hospitalIconUrl);
+    hospitalTex.colorSpace = THREE.SRGBColorSpace;
+    const powerTex = textureLoader.load(powerIconUrl);
+    powerTex.colorSpace = THREE.SRGBColorSpace;
+    const metroTex = textureLoader.load(railwayIconUrl);
+    metroTex.colorSpace = THREE.SRGBColorSpace;
+
+    return {
+      hospital: hospitalTex,
+      power: powerTex,
+      metro: metroTex,
+    };
+  }, [textureLoader]);
+
 
   // Interaction
   const raycasterRef = useRef(new THREE.Raycaster());
@@ -462,47 +484,221 @@ export const Scene3D: React.FC<Scene3DProps> = ({
     metroLineGroupRef.current = metroGroup;
 
     for (const line of metroLines) {
+      const isUnderground = Boolean(line.isUnderground || line.type === 'subway');
       const points: THREE.Vector3[] = [];
-      for (const pt of line.path) {
+
+      for (let i = 0; i < line.path.length; i++) {
+        const pt = line.path[i];
         if (pt.x < 0 || pt.x >= width || pt.y < 0 || pt.y >= height) continue;
-        const cell = grid[pt.y][pt.x];
-        // FAIL-SAFE: Never draw an elevated viaduct through a building!
-        if (cell.buildingZ > 0) continue;
+        const gx = Math.min(width - 1, Math.max(0, Math.floor(pt.x)));
+        const gy = Math.min(height - 1, Math.max(0, Math.floor(pt.y)));
+        const cell = grid[gy][gx];
 
         const posX = (pt.x * SPACING) - HALF_W + SPACING / 2;
         const posZ = (pt.y * SPACING) - HALF_H + SPACING / 2;
         const groundY = cell.terrainZ * VERTICAL_SCALE;
-        const viaductY = groundY + 1.2;
-        points.push(new THREE.Vector3(posX, viaductY, posZ));
 
-        // Concrete support pier beneath viaduct node (only on open ground)
-        const pierHeight = viaductY - groundY + 0.1;
-        const pierGeo = new THREE.CylinderGeometry(0.12, 0.15, pierHeight, 8);
-        const pierMat = new THREE.MeshStandardMaterial({
-          color: '#334155',
-          roughness: 0.8,
-          metalness: 0.1,
-        });
-        const pierMesh = new THREE.Mesh(pierGeo, pierMat);
-        pierMesh.position.set(posX, groundY + pierHeight / 2, posZ);
-        pierMesh.castShadow = true;
-        metroGroup.add(pierMesh);
+        if (isUnderground) {
+          // Subterranean tube beneath terrain surface
+          const undergroundY = groundY - 1.2;
+          points.push(new THREE.Vector3(posX, undergroundY, posZ));
+          // NO surface piers for underground lines!
+        } else {
+          // FAIL-SAFE: Never draw an elevated viaduct through a building!
+          if (cell.buildingZ > 0) continue;
+
+          const viaductY = groundY + 1.2;
+          points.push(new THREE.Vector3(posX, viaductY, posZ));
+
+          // Concrete support pier beneath viaduct node (spaced every 4 nodes)
+          if (i % 4 === 0) {
+            const pierHeight = viaductY - groundY + 0.1;
+            const pierGeo = new THREE.CylinderGeometry(0.12, 0.15, pierHeight, 8);
+            const pierMat = new THREE.MeshStandardMaterial({
+              color: '#334155',
+              roughness: 0.8,
+              metalness: 0.1,
+            });
+            const pierMesh = new THREE.Mesh(pierGeo, pierMat);
+            pierMesh.position.set(posX, groundY + pierHeight / 2, posZ);
+            pierMesh.castShadow = true;
+            metroGroup.add(pierMesh);
+          }
+        }
       }
 
       if (points.length >= 2) {
-        const curve = new THREE.CatmullRomCurve3(points);
-        const tubeGeo = new THREE.TubeGeometry(curve, 64, 0.20, 8, false);
-        const tubeMat = new THREE.MeshStandardMaterial({
-          color: line.isOperational ? '#a855f7' : '#ef4444',
-          emissive: line.isOperational ? '#6b21a8' : '#991b1b',
-          emissiveIntensity: 0.9,
-          roughness: 0.3,
-          metalness: 0.8,
-        });
+        // Continuous smooth Catmull-Rom spline with curve tension 0.5
+        const curve = new THREE.CatmullRomCurve3(points, false, 'catmullrom', 0.5);
+        const tubeSegments = Math.max(96, points.length * 8);
+        const tubeGeo = new THREE.TubeGeometry(curve, tubeSegments, isUnderground ? 0.22 : 0.20, 12, false);
+        const tubeMat = isUnderground
+          ? new THREE.MeshStandardMaterial({
+              color: line.isOperational ? '#00e5ff' : '#ef4444',
+              emissive: line.isOperational ? '#0284c7' : '#991b1b',
+              emissiveIntensity: 1.3,
+              roughness: 0.2,
+              metalness: 0.8,
+              transparent: true,
+              opacity: 0.75,
+              depthWrite: false,
+            })
+          : new THREE.MeshStandardMaterial({
+              color: line.isOperational ? '#a855f7' : '#ef4444',
+              emissive: line.isOperational ? '#6b21a8' : '#991b1b',
+              emissiveIntensity: 0.9,
+              roughness: 0.3,
+              metalness: 0.8,
+            });
         const tubeMesh = new THREE.Mesh(tubeGeo, tubeMat);
-        tubeMesh.castShadow = true;
+        if (!isUnderground) tubeMesh.castShadow = true;
         metroGroup.add(tubeMesh);
         metroTubeMeshRef.current = tubeMesh;
+      }
+    }
+
+    // 8B. RAILWAY INFRASTRUCTURE (Surface Tracks with Ballast & Twin Rails, and Underground Tunnels)
+    const railGroup = new THREE.Group();
+    scene.add(railGroup);
+
+    if (gridState.railways && gridState.railways.length > 0) {
+      const spanMetersX = gridState.spanMetersX || (width * 8.88);
+      const spanMetersZ = gridState.spanMetersZ || (height * 8.88);
+
+      const toWorldX = (xm: number) => {
+        const norm = (xm + spanMetersX / 2) / spanMetersX;
+        const clampedNorm = Math.max(0.001, Math.min(0.999, norm));
+        return (clampedNorm - 0.5) * (width * SPACING);
+      };
+      const toWorldZ = (zm: number) => {
+        const norm = (zm + spanMetersZ / 2) / spanMetersZ;
+        const clampedNorm = Math.max(0.001, Math.min(0.999, norm));
+        return (clampedNorm - 0.5) * (height * SPACING);
+      };
+
+      const railVertices: number[] = [];
+      const trackbedVertices: number[] = [];
+
+      for (const rway of gridState.railways) {
+        if (rway.points.length < 2) continue;
+
+        if (rway.isUnderground) {
+          // Render underground railway as subterranean conduit
+          const undergroundPts: THREE.Vector3[] = [];
+          for (const pt of rway.points) {
+            const wx = toWorldX(pt[0]);
+            const wz = toWorldZ(pt[1]);
+            const gx = Math.min(width - 1, Math.max(0, Math.floor((wx + HALF_W) / SPACING)));
+            const gz = Math.min(height - 1, Math.max(0, Math.floor((wz + HALF_H) / SPACING)));
+            const gy = (grid[gz][gx].terrainZ * VERTICAL_SCALE) - 1.4;
+            undergroundPts.push(new THREE.Vector3(wx, gy, wz));
+          }
+          if (undergroundPts.length >= 2) {
+            const curve = new THREE.CatmullRomCurve3(undergroundPts, false, 'catmullrom', 0.5);
+            const tubeGeo = new THREE.TubeGeometry(curve, Math.max(32, undergroundPts.length * 4), 0.18, 8, false);
+            const tubeMat = new THREE.MeshStandardMaterial({
+              color: '#06b6d4',
+              emissive: '#0891b2',
+              emissiveIntensity: 1.1,
+              transparent: true,
+              opacity: 0.65,
+              depthWrite: false,
+            });
+            const tubeMesh = new THREE.Mesh(tubeGeo, tubeMat);
+            railGroup.add(tubeMesh);
+          }
+        } else {
+          // Surface Railway: Dark ballast bed ribbon + Dual steel rails
+          const trackbedHalfW = 0.28; // ~3.7m ballast width
+          const railOffset = 0.12;    // ~1.6m gauge
+
+          const centerline: Array<[number, number, number]> = [];
+          for (let i = 0; i < rway.points.length - 1; i++) {
+            const p1 = rway.points[i];
+            const p2 = rway.points[i + 1];
+            const x1 = toWorldX(p1[0]);
+            const z1 = toWorldZ(p1[1]);
+            const x2 = toWorldX(p2[0]);
+            const z2 = toWorldZ(p2[1]);
+            const segLen = Math.hypot(x2 - x1, z2 - z1);
+            if (segLen < 0.001) continue;
+            const steps = Math.max(1, Math.ceil(segLen / 0.5));
+            const startIdx = i === 0 ? 0 : 1;
+            for (let s = startIdx; s <= steps; s++) {
+              const t = s / steps;
+              const cx = x1 + t * (x2 - x1);
+              const cz = z1 + t * (z2 - z1);
+              const gx = Math.min(width - 1, Math.max(0, Math.floor((cx + HALF_W) / SPACING)));
+              const gz = Math.min(height - 1, Math.max(0, Math.floor((cz + HALF_H) / SPACING)));
+              const cy = (grid[gz][gx].terrainZ * VERTICAL_SCALE) + 0.06;
+              centerline.push([cx, cy, cz]);
+            }
+          }
+
+          if (centerline.length >= 2) {
+            for (let i = 0; i < centerline.length - 1; i++) {
+              const [ax, ay, az] = centerline[i];
+              const [bx, by, bz] = centerline[i + 1];
+              const dx = bx - ax;
+              const dz = bz - az;
+              const len = Math.hypot(dx, dz);
+              if (len < 0.0001) continue;
+              const nx = -dz / len;
+              const nz = dx / len;
+
+              // Trackbed Quad (dark ballast)
+              trackbedVertices.push(
+                ax - nx * trackbedHalfW, ay, az - nz * trackbedHalfW,
+                ax + nx * trackbedHalfW, ay, az + nz * trackbedHalfW,
+                bx + nx * trackbedHalfW, by, bz + nz * trackbedHalfW,
+                ax - nx * trackbedHalfW, ay, az - nz * trackbedHalfW,
+                bx + nx * trackbedHalfW, by, bz + nz * trackbedHalfW,
+                bx - nx * trackbedHalfW, by, bz - nz * trackbedHalfW,
+              );
+
+              // Left & Right Steel Rails
+              const r1x = ax - nx * railOffset, r1z = az - nz * railOffset;
+              const r2x = bx - nx * railOffset, r2z = bz - nz * railOffset;
+              const r3x = ax + nx * railOffset, r3z = az + nz * railOffset;
+              const r4x = bx + nx * railOffset, r4z = bz + nz * railOffset;
+              const railW = 0.035;
+
+              railVertices.push(
+                r1x - nx * railW, ay + 0.03, r1z - nz * railW,
+                r1x + nx * railW, ay + 0.03, r1z + nz * railW,
+                r2x + nx * railW, by + 0.03, r2z + nz * railW,
+                r1x - nx * railW, ay + 0.03, r1z - nz * railW,
+                r2x + nx * railW, by + 0.03, r2z + nz * railW,
+                r2x - nx * railW, by + 0.03, r2z - nz * railW,
+
+                r3x - nx * railW, ay + 0.03, r3z - nz * railW,
+                r3x + nx * railW, ay + 0.03, r3z + nz * railW,
+                r4x + nx * railW, by + 0.03, r4z + nz * railW,
+                r3x - nx * railW, ay + 0.03, r3z - nz * railW,
+                r4x + nx * railW, by + 0.03, r4z + nz * railW,
+                r4x - nx * railW, by + 0.03, r4z - nz * railW,
+              );
+            }
+          }
+        }
+      }
+
+      if (trackbedVertices.length > 0) {
+        const tbGeo = new THREE.BufferGeometry();
+        tbGeo.setAttribute('position', new THREE.Float32BufferAttribute(trackbedVertices, 3));
+        tbGeo.computeVertexNormals();
+        const tbMat = new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.9, metalness: 0.1 });
+        const tbMesh = new THREE.Mesh(tbGeo, tbMat);
+        railGroup.add(tbMesh);
+      }
+
+      if (railVertices.length > 0) {
+        const rGeo = new THREE.BufferGeometry();
+        rGeo.setAttribute('position', new THREE.Float32BufferAttribute(railVertices, 3));
+        rGeo.computeVertexNormals();
+        const rMat = new THREE.MeshStandardMaterial({ color: '#94a3b8', roughness: 0.3, metalness: 0.8 });
+        const rMesh = new THREE.Mesh(rGeo, rMat);
+        railGroup.add(rMesh);
       }
     }
 
@@ -763,12 +959,14 @@ export const Scene3D: React.FC<Scene3DProps> = ({
       animationFrameId = requestAnimationFrame(animate);
       const elapsedTime = clock.getElapsedTime();
 
-      // Gentle floating bob & rotation for beacons
+      // Gentle floating bob for icons above buildings
       beaconMeshesRef.current.forEach(({ mesh, asset }) => {
-        mesh.rotation.y = elapsedTime * 1.5;
         const cell = grid[asset.y][asset.x];
-        const baseGroundY = (cell.terrainZ + (cell.h > 0 ? cell.h * 1.5 : 0)) * VERTICAL_SCALE;
-        mesh.position.y = baseGroundY + 2.4 + Math.sin(elapsedTime * 3.0) * 0.3;
+        const groundY = cell.terrainZ * VERTICAL_SCALE;
+        const bldgH = cell.buildingZ > 0 ? Math.max(0.6, cell.buildingZ * 0.45) : 0;
+        const waterH = (cell.h > 0 ? cell.h * 1.5 : 0) * VERTICAL_SCALE;
+        const topY = groundY + Math.max(bldgH, waterH);
+        mesh.position.y = topY + 1.8 + Math.sin(elapsedTime * 3.0) * 0.25;
       });
 
       controls.update();
@@ -816,44 +1014,81 @@ export const Scene3D: React.FC<Scene3DProps> = ({
       depthTex.needsUpdate = true;
     }
 
-    // A. Update 3D Building Blocks
-    const bldgMesh = buildingsMeshRef.current;
-    if (bldgMesh && buildingCells.length > 0) {
-      for (let i = 0; i < buildingCells.length; i++) {
-        const cell = buildingCells[i];
-        const posX = (cell.x * SPACING) - HALF_W + SPACING / 2;
-        const posZ = (cell.y * SPACING) - HALF_H + SPACING / 2;
-        const baseY = cell.terrainZ * VERTICAL_SCALE;
-        const bldgHeight = Math.max(0.6, cell.buildingZ * 0.45);
+    // A. Update 3D Building Blocks (Dynamic InstancedMesh Re-instantiation & Scaling)
+    const validBuildings = buildingCells;
+    let bldgMesh = buildingsMeshRef.current;
+    const scene = sceneRef.current;
 
-        dummyPosition.current.set(posX, baseY, posZ);
-        dummyScale.current.set(1, bldgHeight, 1);
-        dummyMatrix.current.compose(dummyPosition.current, dummyQuaternion.current, dummyScale.current);
-        bldgMesh.setMatrixAt(i, dummyMatrix.current);
-
-        // Building color:
-        // Alert Red for critical flood (H >= 0.40m)
-        // Electric Amber for warning flood (H >= 0.15m)
-        // Architectural off-white / light slate for dry
-        if (cell.h >= 0.40) {
-          tempColor.current.copy(COLOR_RED.current);
-        } else if (cell.h >= 0.15) {
-          tempColor.current.copy(COLOR_AMBER.current);
-        } else if (cell.criticalAsset) {
-          if (cell.criticalAsset.type === 'hospital') tempColor.current.copy(COLOR_HOSPITAL.current);
-          else if (cell.criticalAsset.type === 'power_station') tempColor.current.copy(COLOR_POWER.current);
-          else tempColor.current.copy(COLOR_METRO.current);
-        } else if (cell.landType === 'urban_high') {
-          tempColor.current.copy(COLOR_BLDG_HIGH.current);
-        } else {
-          tempColor.current.copy(COLOR_BLDG_MID.current);
+    if (scene) {
+      if (!bldgMesh || bldgMesh.count !== validBuildings.length) {
+        if (bldgMesh) {
+          scene.remove(bldgMesh);
+          bldgMesh.geometry.dispose();
         }
 
-        bldgMesh.setColorAt(i, tempColor.current);
+        if (validBuildings.length > 0) {
+          const baseBoxGeometry = new THREE.BoxGeometry(0.86, 1.0, 0.86);
+          baseBoxGeometry.translate(0, 0.5, 0); // Origin at bottom of building
+          const buildingMaterial = new THREE.MeshStandardMaterial({
+            roughness: 0.85,
+            metalness: 0.05,
+            flatShading: true,
+          });
+
+          bldgMesh = new THREE.InstancedMesh(
+            baseBoxGeometry,
+            buildingMaterial,
+            validBuildings.length
+          );
+          const bldgColors = new Float32Array(validBuildings.length * 3);
+          bldgColors.fill(0.85);
+          bldgMesh.instanceColor = new THREE.InstancedBufferAttribute(bldgColors, 3);
+          bldgMesh.castShadow = true;
+          bldgMesh.receiveShadow = true;
+          scene.add(bldgMesh);
+          buildingsMeshRef.current = bldgMesh;
+        } else {
+          buildingsMeshRef.current = null;
+        }
       }
 
-      bldgMesh.instanceMatrix.needsUpdate = true;
-      if (bldgMesh.instanceColor) bldgMesh.instanceColor.needsUpdate = true;
+      if (bldgMesh && validBuildings.length > 0) {
+        for (let i = 0; i < validBuildings.length; i++) {
+          const cell = validBuildings[i];
+          const posX = (cell.x * SPACING) - HALF_W + SPACING / 2;
+          const posZ = (cell.y * SPACING) - HALF_H + SPACING / 2;
+          const baseY = cell.terrainZ * VERTICAL_SCALE;
+          const bldgHeight = Math.max(0.6, cell.buildingZ * 0.45);
+
+          dummyPosition.current.set(posX, baseY, posZ);
+          dummyScale.current.set(1, bldgHeight, 1);
+          dummyMatrix.current.compose(dummyPosition.current, dummyQuaternion.current, dummyScale.current);
+          bldgMesh.setMatrixAt(i, dummyMatrix.current);
+
+          // Building color:
+          // Alert Red for critical flood (H >= 0.40m)
+          // Electric Amber for warning flood (H >= 0.15m)
+          // Architectural off-white / light slate for dry
+          if (cell.h >= 0.40) {
+            tempColor.current.copy(COLOR_RED.current);
+          } else if (cell.h >= 0.15) {
+            tempColor.current.copy(COLOR_AMBER.current);
+          } else if (cell.criticalAsset) {
+            if (cell.criticalAsset.type === 'hospital') tempColor.current.copy(COLOR_HOSPITAL.current);
+            else if (cell.criticalAsset.type === 'power_station') tempColor.current.copy(COLOR_POWER.current);
+            else tempColor.current.copy(COLOR_METRO.current);
+          } else if (cell.landType === 'urban_high') {
+            tempColor.current.copy(COLOR_BLDG_HIGH.current);
+          } else {
+            tempColor.current.copy(COLOR_BLDG_MID.current);
+          }
+
+          bldgMesh.setColorAt(i, tempColor.current);
+        }
+
+        bldgMesh.instanceMatrix.needsUpdate = true;
+        if (bldgMesh.instanceColor) bldgMesh.instanceColor.needsUpdate = true;
+      }
     }
 
     // B. Update Volumetric 3D Water Mesh (Continuous Seamless Fluid Surface, Zero Voxel Steps)
@@ -900,16 +1135,18 @@ export const Scene3D: React.FC<Scene3DProps> = ({
       const cornerBedY = new Float32Array(totalCorners);
       const cornerRiverCount = new Uint8Array(totalCorners);
 
-      // Pass 1: Accumulate elevations at grid corner intersections from all adjacent river cells
+      // Pass 1: Accumulate elevations at grid corner intersections from all active water cells (both standing water and pluvial flood)
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
           const cell = grid[y][x];
-          if (!cell.isRiver) continue;
+          const isWaterCell = cell.isRiver || cell.h > 0.02;
+          if (!isWaterCell) continue;
 
-          // Universal hydrostatic surface elevation across coastal sea, lakes, basins & rivers
+          // Universal hydrostatic surface elevation across coastal sea, lakes, basins, rivers & pluvial floodwaters
           const surfaceMeters = cell.terrainZ + cell.h;
-          const surfaceY = Math.max(0.005, surfaceMeters * VERTICAL_SCALE + 0.005);
-          const bedY = Math.min(surfaceY - 0.01, cell.terrainZ * VERTICAL_SCALE);
+          // Clean 0.015 offset above ground quad plane completely prevents z-fighting
+          const surfaceY = Math.max(0.005, surfaceMeters * VERTICAL_SCALE + 0.015);
+          const bedY = cell.terrainZ * VERTICAL_SCALE;
 
           const idx00 = y * numCornerX + x;
           const idx10 = y * numCornerX + (x + 1);
@@ -935,7 +1172,8 @@ export const Scene3D: React.FC<Scene3DProps> = ({
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
           const cell = grid[y][x];
-          if (!cell.isRiver) continue;
+          const isWaterCell = cell.isRiver || cell.h > 0.02;
+          if (!isWaterCell) continue;
 
           const x0 = (x * SPACING) - HALF_W;
           const x1 = x0 + SPACING;
@@ -947,10 +1185,11 @@ export const Scene3D: React.FC<Scene3DProps> = ({
           const idx01 = (y + 1) * numCornerX + x;
           const idx11 = (y + 1) * numCornerX + (x + 1);
 
-          const wy00 = cornerWaterY[idx00];
-          const wy10 = cornerWaterY[idx10];
-          const wy11 = cornerWaterY[idx11];
-          const wy01 = cornerWaterY[idx01];
+          // Guarantee water quad corners stay slightly above adjacent ground corners
+          const wy00 = Math.max(cornerBedY[idx00] + 0.012, cornerWaterY[idx00]);
+          const wy10 = Math.max(cornerBedY[idx10] + 0.012, cornerWaterY[idx10]);
+          const wy11 = Math.max(cornerBedY[idx11] + 0.012, cornerWaterY[idx11]);
+          const wy01 = Math.max(cornerBedY[idx01] + 0.012, cornerWaterY[idx01]);
 
           const by00 = cornerBedY[idx00];
           const by10 = cornerBedY[idx10];
@@ -965,24 +1204,28 @@ export const Scene3D: React.FC<Scene3DProps> = ({
             x0, wy01, z1
           );
 
-          // Shoreline & Perimeter Skirts (Vertical walls going DOWN from surface to bed)
+          // Shoreline & Perimeter Skirts (Vertical walls going DOWN from surface to bed where water meets dry ground)
           // North edge
-          if (y === 0 || !grid[y - 1][x].isRiver) {
+          const isNorthDry = y === 0 || !(grid[y - 1][x].isRiver || grid[y - 1][x].h > 0.02);
+          if (isNorthDry) {
             pushQuad(x0, wy00, z0, x1, wy10, z0, x1, by10, z0, x0, by00, z0);
           }
 
           // South edge
-          if (y === height - 1 || !grid[y + 1][x].isRiver) {
+          const isSouthDry = y === height - 1 || !(grid[y + 1][x].isRiver || grid[y + 1][x].h > 0.02);
+          if (isSouthDry) {
             pushQuad(x1, wy11, z1, x0, wy01, z1, x0, by01, z1, x1, by11, z1);
           }
 
           // West edge
-          if (x === 0 || !grid[y][x - 1].isRiver) {
+          const isWestDry = x === 0 || !(grid[y][x - 1].isRiver || grid[y][x - 1].h > 0.02);
+          if (isWestDry) {
             pushQuad(x0, wy01, z1, x0, wy00, z0, x0, by00, z0, x0, by01, z1);
           }
 
           // East edge
-          if (x === width - 1 || !grid[y][x + 1].isRiver) {
+          const isEastDry = x === width - 1 || !(grid[y][x + 1].isRiver || grid[y][x + 1].h > 0.02);
+          if (isEastDry) {
             pushQuad(x1, wy10, z0, x1, wy11, z1, x1, by11, z1, x1, by10, z0);
           }
         }
@@ -1025,7 +1268,7 @@ export const Scene3D: React.FC<Scene3DProps> = ({
       mat.emissiveIntensity = isOp ? 0.9 : 1.25;
     }
 
-    // E. Update Floating Infrastructure 3D Beacons
+    // E. Update Floating Infrastructure 3D Icons
     const beaconsGroup = beaconsGroupRef.current;
     if (beaconsGroup) {
       beaconsGroup.clear();
@@ -1035,31 +1278,35 @@ export const Scene3D: React.FC<Scene3DProps> = ({
         const posX = (asset.x * SPACING) - HALF_W + SPACING / 2;
         const posZ = (asset.y * SPACING) - HALF_H + SPACING / 2;
         const cell = grid[asset.y][asset.x];
-        const posY = (cell.terrainZ + (cell.h > 0 ? cell.h * 1.5 : 0)) * VERTICAL_SCALE + 2.4;
+        const groundY = cell.terrainZ * VERTICAL_SCALE;
+        const bldgH = cell.buildingZ > 0 ? Math.max(0.6, cell.buildingZ * 0.45) : 0;
+        const waterH = (cell.h > 0 ? cell.h * 1.5 : 0) * VERTICAL_SCALE;
+        const topY = groundY + Math.max(bldgH, waterH);
+        const posY = topY + 1.8;
 
-        const beaconGeo = new THREE.OctahedronGeometry(0.85, 0);
-        let beaconColor = '#10b981'; // Emerald for hospital
-        if (asset.type === 'power_station') beaconColor = '#f59e0b';
-        if (asset.type === 'metro_station') beaconColor = '#a855f7';
+        let iconTexture = iconTextures.hospital;
+        if (asset.type === 'power_station') iconTexture = iconTextures.power;
+        if (asset.type === 'metro_station') iconTexture = iconTextures.metro;
 
-        if (asset.status === 'flooded' || asset.status === 'isolated') {
-          beaconColor = '#ef4444'; // Red for compromised
-        }
+        const isFlooded = asset.status === 'flooded' || asset.status === 'isolated';
 
-        const beaconMat = new THREE.MeshStandardMaterial({
-          color: beaconColor,
-          emissive: beaconColor,
-          emissiveIntensity: asset.status === 'flooded' ? 1.1 : 0.65,
-          roughness: 0.2,
-          metalness: 0.7,
+        const spriteMat = new THREE.SpriteMaterial({
+          map: iconTexture,
+          transparent: true,
+          depthTest: true,
+          depthWrite: false,
+          color: isFlooded ? new THREE.Color('#FF4D4D') : new THREE.Color('#FFFFFF'),
         });
+        const sprite = new THREE.Sprite(spriteMat);
+        sprite.center.set(0.5, 0.05);
+        sprite.position.set(posX, posY, posZ);
+        const iconScale = isFlooded ? 2.6 : 2.2;
+        sprite.scale.set(iconScale, iconScale, 1);
+        sprite.renderOrder = 10;
 
-        const beaconMesh = new THREE.Mesh(beaconGeo, beaconMat);
-        beaconMesh.position.set(posX, posY, posZ);
-        beaconMesh.castShadow = true;
-        beaconsGroup.add(beaconMesh);
+        beaconsGroup.add(sprite);
 
-        beaconMeshesRef.current.set(asset.id, { mesh: beaconMesh, asset });
+        beaconMeshesRef.current.set(asset.id, { mesh: sprite, asset });
       }
     }
 

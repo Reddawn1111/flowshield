@@ -1,5 +1,6 @@
 import { BoundingBox } from '../services/elevationService';
 import { OverpassResponse, OverpassElement } from '../services/overpassService';
+import { RiverInflowStatus } from '../types/simulation';
 
 export interface DigitalTwinDataset {
   center: { lat: number; lon: number; name: string };
@@ -16,6 +17,12 @@ export interface DigitalTwinDataset {
     type: string;
     points: Array<[number, number]>; // local (x, z) points in meters
   }>;
+  railways?: Array<{
+    id: string;
+    type: 'rail' | 'subway' | 'light_rail' | 'tram';
+    isUnderground: boolean;
+    points: Array<[number, number]>; // local (x, z) points in meters
+  }>;
   waterBodies: Array<{
     id: string;
     type: string;
@@ -30,6 +37,9 @@ export interface DigitalTwinDataset {
     gridY: number;
     position: [number, number, number]; // local (x, y, z)
   }>;
+  riverInflowStatus?: RiverInflowStatus;
+  bboxSpanKm?: number;
+  bbox?: BoundingBox;
 }
 
 const EARTH_RADIUS = 6378137.0; // WGS84 equatorial radius in meters
@@ -113,6 +123,7 @@ export class GeoTransformer {
   private gridHeight: number;
   private spanMetersX: number;
   private spanMetersZ: number;
+  private bboxSpanKm: number;
 
   constructor(
     centerLat: number,
@@ -120,7 +131,8 @@ export class GeoTransformer {
     locationName: string,
     bbox: BoundingBox,
     gridWidth: number = 90,
-    gridHeight: number = 90
+    gridHeight: number = 90,
+    bboxSpanKm?: number
   ) {
     this.centerLat = centerLat;
     this.centerLon = centerLon;
@@ -134,27 +146,28 @@ export class GeoTransformer {
     const [maxX, maxZ] = this.project(bbox.north, bbox.east);
     this.spanMetersX = Math.max(200, Math.abs(maxX - minX));
     this.spanMetersZ = Math.max(200, Math.abs(maxZ - minZ));
+    this.bboxSpanKm = bboxSpanKm || parseFloat((this.spanMetersX / 1000.0).toFixed(3));
   }
 
   /**
    * Project WGS84 (lat, lon) to local Cartesian meters (X, Z) centered at (0, 0)
-   * Formula:
-   *   X = (lon - lon_center) * (pi / 180) * R * cos(lat_center * pi / 180)
-   *   Z = -(lat - lat_center) * (pi / 180) * R
+   * Uses exact geodesic degree meters:
+   *   metersPerLonDegree = (pi / 180) * R * cos(lat_center * pi / 180)
+   *   metersPerLatDegree = (pi / 180) * R
    */
   public project(lat: number, lon: number): [number, number] {
     const latCenterRad = (this.centerLat * Math.PI) / 180.0;
-    const x =
-      (lon - this.centerLon) *
-      (Math.PI / 180.0) *
-      EARTH_RADIUS *
-      Math.cos(latCenterRad);
-    const z = -((lat - this.centerLat) * (Math.PI / 180.0) * EARTH_RADIUS);
+    const metersPerLonDegree = (Math.PI / 180.0) * EARTH_RADIUS * Math.cos(latCenterRad);
+    const metersPerLatDegree = (Math.PI / 180.0) * EARTH_RADIUS;
+
+    const x = (lon - this.centerLon) * metersPerLonDegree;
+    const z = -((lat - this.centerLat) * metersPerLatDegree);
     return [parseFloat(x.toFixed(2)), parseFloat(z.toFixed(2))];
   }
 
   /**
    * Map local Cartesian (X, Z) to grid cell indices [gridX, gridY]
+   * Incorporates scale = DIORAMA_WORLD_SIZE / (bboxSpanKm * 1000)
    */
   public toGridCoords(x: number, z: number): [number, number] {
     const u = (x + this.spanMetersX / 2) / this.spanMetersX;
@@ -192,6 +205,15 @@ export class GeoTransformer {
       if (m.type !== 'way') continue;
       const way = wayMap.get(m.ref);
       if (!way || !way.nodes || way.nodes.length < 2) continue;
+
+      const wTags = way.tags || {};
+      const isSubterranean =
+        wTags.tunnel === 'yes' ||
+        wTags.tunnel === 'culvert' ||
+        wTags.covered === 'yes' ||
+        wTags.location === 'underground' ||
+        (wTags.layer !== undefined && parseInt(wTags.layer) < 0);
+      if (isSubterranean) continue;
 
       const role = (m.role || 'outer').toLowerCase();
       if (role === 'inner') {
@@ -300,7 +322,17 @@ export class GeoTransformer {
         if (el.members) {
           for (const m of el.members) {
             if (m.type === 'way') {
-              waterWayIds.add(m.ref);
+              const way = wayMap.get(m.ref);
+              const wTags = way?.tags || {};
+              const isSubterranean =
+                wTags.tunnel === 'yes' ||
+                wTags.tunnel === 'culvert' ||
+                wTags.covered === 'yes' ||
+                wTags.location === 'underground' ||
+                (wTags.layer !== undefined && parseInt(wTags.layer) < 0);
+              if (!isSubterranean) {
+                waterWayIds.add(m.ref);
+              }
             }
           }
         }
@@ -309,6 +341,7 @@ export class GeoTransformer {
 
     const buildings: DigitalTwinDataset['buildings'] = [];
     const roads: DigitalTwinDataset['roads'] = [];
+    const railways: NonNullable<DigitalTwinDataset['railways']> = [];
     const waterBodies: DigitalTwinDataset['waterBodies'] = [];
     const criticalAssets: DigitalTwinDataset['criticalAssets'] = [];
 
@@ -546,6 +579,79 @@ export class GeoTransformer {
       }
 
       // -------------------------------------------------------------
+      // 3B. PARSE RAILWAYS & METRO TRACKS (With Underground Support & Clipping)
+      // -------------------------------------------------------------
+      if (el.type === 'way' && el.tags && el.tags.railway && el.nodes && el.nodes.length >= 2) {
+        const rway = el.tags.railway;
+        if (['rail', 'subway', 'light_rail', 'tram', 'narrow_gauge'].includes(rway)) {
+          const isUnderground = el.tags.tunnel === 'yes' ||
+            el.tags.tunnel === 'building_passage' ||
+            parseInt(el.tags.layer || '0') < 0 ||
+            el.tags.location === 'underground' ||
+            rway === 'subway';
+
+          const rawPoints: Array<[number, number]> = [];
+          for (const nodeId of el.nodes) {
+            const node = nodeMap.get(nodeId);
+            if (node) {
+              rawPoints.push(this.project(node.lat, node.lon));
+            }
+          }
+
+          const halfW = this.spanMetersX / 2;
+          const halfH = this.spanMetersZ / 2;
+
+          let currentChain: Array<[number, number]> = [];
+          for (let i = 0; i < rawPoints.length - 1; i++) {
+            const clipped = clipSegment(
+              rawPoints[i][0], rawPoints[i][1],
+              rawPoints[i + 1][0], rawPoints[i + 1][1],
+              -halfW, halfW, -halfH, halfH
+            );
+            if (clipped) {
+              const [pA, pB] = clipped;
+              if (currentChain.length === 0) {
+                currentChain.push(pA, pB);
+              } else {
+                const last = currentChain[currentChain.length - 1];
+                if (Math.hypot(last[0] - pA[0], last[1] - pA[1]) < 0.1) {
+                  currentChain.push(pB);
+                } else {
+                  if (currentChain.length >= 2) {
+                    railways.push({
+                      id: `rail_${el.id}_${railways.length}`,
+                      type: (rway === 'narrow_gauge' ? 'rail' : rway) as 'rail' | 'subway' | 'light_rail' | 'tram',
+                      isUnderground,
+                      points: currentChain,
+                    });
+                  }
+                  currentChain = [pA, pB];
+                }
+              }
+            } else {
+              if (currentChain.length >= 2) {
+                railways.push({
+                  id: `rail_${el.id}_${railways.length}`,
+                  type: (rway === 'narrow_gauge' ? 'rail' : rway) as 'rail' | 'subway' | 'light_rail' | 'tram',
+                  isUnderground,
+                  points: currentChain,
+                });
+              }
+              currentChain = [];
+            }
+          }
+          if (currentChain.length >= 2) {
+            railways.push({
+              id: `rail_${el.id}_${railways.length}`,
+              type: (rway === 'narrow_gauge' ? 'rail' : rway) as 'rail' | 'subway' | 'light_rail' | 'tram',
+              isUnderground,
+              points: currentChain,
+            });
+          }
+        }
+      }
+
+      // -------------------------------------------------------------
       // 4. PARSE CRITICAL INFRASTRUCTURE (Hospitals, Power, Metro)
       // -------------------------------------------------------------
       const tags = el.tags || {};
@@ -667,6 +773,17 @@ export class GeoTransformer {
         el.members &&
         el.members.length > 0
       ) {
+        const rTags = el.tags || {};
+        const isRelSubterranean =
+          rTags.tunnel === 'yes' ||
+          rTags.tunnel === 'culvert' ||
+          rTags.covered === 'yes' ||
+          rTags.location === 'underground' ||
+          (rTags.layer !== undefined && parseInt(rTags.layer) < 0);
+        if (isRelSubterranean) {
+          continue;
+        }
+
         const stitched = this.stitchMultiPolygon(el.members, wayMap, nodeMap);
         for (let rIdx = 0; rIdx < stitched.outerRings.length; rIdx++) {
           const ring = stitched.outerRings[rIdx];
@@ -744,8 +861,11 @@ export class GeoTransformer {
       elevationGrid,
       buildings,
       roads,
+      railways,
       waterBodies,
       criticalAssets,
+      bboxSpanKm: this.bboxSpanKm,
+      bbox: this.bbox,
     };
   }
 }

@@ -10,6 +10,12 @@ export interface BoundingBox {
   east: number;
 }
 
+const demCache = new Map<string, Float32Array>();
+
+function getBBoxKey(bbox: BoundingBox): string {
+  return `${bbox.south.toFixed(4)},${bbox.west.toFixed(4)},${bbox.north.toFixed(4)},${bbox.east.toFixed(4)}`;
+}
+
 /**
  * Fetch elevation grid for a bounding box
  * @param bbox { south, west, north, east }
@@ -22,18 +28,29 @@ export async function fetchElevationGrid(
   gridWidth: number = 90,
   gridHeight: number = 90
 ): Promise<Float32Array> {
+  const cacheKey = getBBoxKey(bbox);
+  if (demCache.has(cacheKey)) {
+    return new Float32Array(demCache.get(cacheKey)!);
+  }
+
   try {
     const rawGrid = await fetchFromOpenMeteo(bbox, gridWidth, gridHeight);
-    return normalizeElevationGrid(rawGrid);
+    const normalized = normalizeElevationGrid(rawGrid, gridWidth, gridHeight);
+    demCache.set(cacheKey, normalized);
+    return new Float32Array(normalized);
   } catch (err) {
-    console.warn('Open-Meteo elevation query failed, attempting Terrarium fallback:', err);
+    console.warn('Open-Meteo elevation query failed or timed out, attempting Terrarium fallback:', err);
     try {
       const terrariumGrid = await fetchFromTerrarium(bbox, gridWidth, gridHeight);
-      return normalizeElevationGrid(terrariumGrid);
+      const normalized = normalizeElevationGrid(terrariumGrid, gridWidth, gridHeight);
+      demCache.set(cacheKey, normalized);
+      return new Float32Array(normalized);
     } catch (fallbackErr) {
       console.warn('Terrarium fallback failed, generating fallback DEM:', fallbackErr);
       const proceduralGrid = generateProceduralDEM(bbox, gridWidth, gridHeight);
-      return normalizeElevationGrid(proceduralGrid);
+      const normalized = normalizeElevationGrid(proceduralGrid, gridWidth, gridHeight);
+      demCache.set(cacheKey, normalized);
+      return new Float32Array(normalized);
     }
   }
 }
@@ -64,7 +81,16 @@ async function fetchFromOpenMeteo(
 
   const url = `https://api.open-meteo.com/v1/elevation?latitude=${sampleLats.join(',')}&longitude=${sampleLons.join(',')}`;
   
-  const res = await fetch(url);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 2500);
+
+  let res: Response;
+  try {
+    res = await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
   if (!res.ok) {
     throw new Error(`Open-Meteo elevation HTTP ${res.status}`);
   }

@@ -5,6 +5,7 @@ export interface OverpassElement {
   id: number;
   lat?: number;
   lon?: number;
+  center?: { lat: number; lon: number };
   nodes?: number[];
   members?: Array<{ type: string; ref: number; role?: string }>;
   tags?: Record<string, string>;
@@ -27,7 +28,7 @@ const memorySessionCache = new Map<string, OverpassResponse>();
  * 4. Overpass API interpreters (overpass-api.de, kumi.systems)
  * 5. Procedural watershed synthesizer with natural waterbody and roads as offline fallback
  */
-export async function fetchOverpassData(bbox: BoundingBox): Promise<OverpassResponse> {
+export async function fetchOverpassData(bbox: BoundingBox, bboxSpanKm?: number): Promise<OverpassResponse> {
   const centerLat = (bbox.north + bbox.south) / 2;
   const centerLon = (bbox.east + bbox.west) / 2;
   const cacheKey = `${bbox.south.toFixed(4)},${bbox.west.toFixed(4)},${bbox.north.toFixed(4)},${bbox.east.toFixed(4)}`;
@@ -36,16 +37,16 @@ export async function fetchOverpassData(bbox: BoundingBox): Promise<OverpassResp
     return memorySessionCache.get(cacheKey)!;
   }
 
-  // 1. FAST-PATH: If this matches one of the benchmark presets, load authentic pre-cached OSM data
+  // 1. FAST-PATH: If this matches a benchmark preset, load authentic pre-cached OSM data
   try {
     let presetFile: string | null = null;
-    if (Math.hypot(centerLat - 1.285, centerLon - 103.856) < 0.02) {
+    if (Math.hypot(centerLat - 1.285, centerLon - 103.856) < 0.03) {
       presetFile = '/presets/marinabay.json';
-    } else if (Math.hypot(centerLat - 45.440, centerLon - 12.335) < 0.02) {
+    } else if (Math.hypot(centerLat - 45.440, centerLon - 12.335) < 0.03) {
       presetFile = '/presets/venice.json';
-    } else if (Math.hypot(centerLat - 35.659, centerLon - 139.700) < 0.02) {
+    } else if (Math.hypot(centerLat - 35.659, centerLon - 139.700) < 0.03) {
       presetFile = '/presets/shibuya.json';
-    } else if (Math.hypot(centerLat - 40.707, centerLon - (-74.010)) < 0.02) {
+    } else if (Math.hypot(centerLat - 40.707, centerLon - (-74.010)) < 0.03) {
       presetFile = '/presets/manhattan.json';
     }
 
@@ -63,38 +64,12 @@ export async function fetchOverpassData(bbox: BoundingBox): Promise<OverpassResp
     console.warn('Preset cache load failed, proceeding to live query:', presetErr);
   }
 
-  // 2. LIVE OPEN DATA: Query Official OpenStreetMap API (fastest, highest uptime, 2-4s response)
-  try {
-    const osmUrl = `https://api.openstreetmap.org/api/0.6/map.json?bbox=${bbox.west.toFixed(6)},${bbox.south.toFixed(6)},${bbox.east.toFixed(6)},${bbox.north.toFixed(6)}`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
-
-    const osmRes = await fetch(osmUrl, {
-      signal: controller.signal,
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'FLOWSHIELD-UrbanFloodTwin/1.0',
-      },
-    });
-    clearTimeout(timeoutId);
-
-    if (osmRes.ok) {
-      const osmJson: OverpassResponse = await osmRes.json();
-      if (osmJson && osmJson.elements && osmJson.elements.length > 0) {
-        memorySessionCache.set(cacheKey, osmJson);
-        return osmJson;
-      }
-    }
-  } catch (osmErr) {
-    console.warn('Official OSM API query failed or timed out, attempting Overpass API:', osmErr);
-  }
-
-  // 3. SECONDARY SOURCE: Overpass API endpoints with expanded memory and relation extraction
-  const query = `[out:json][timeout:50][maxsize:1073741824];
+  // 2. LIVE OVERPASS OPEN DATA: Query Overpass endpoints with dynamic BBox and multipolygon building relations
+  const query = `[out:json][timeout:35][maxsize:1073741824];
 (
+  // Fetch building polygons, arterial roads, railways, water bodies and critical infrastructure
   way["building"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
-  relation["building"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
-  way["highway"~"primary|secondary|tertiary|trunk|motorway|residential|unclassified|service|pedestrian|living_street"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
+  way["highway"~"primary|secondary|tertiary|trunk|motorway|residential|unclassified"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
   way["railway"~"rail|light_rail|subway|tram"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
   way["natural"~"water|bay|coastline"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
   relation["natural"="water"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
@@ -111,20 +86,21 @@ out body;
 out skel qt;`;
 
   const endpoints = [
+    'https://lz4.overpass-api.de/api/interpreter',
+    'https://z.overpass-api.de/api/interpreter',
     'https://overpass-api.de/api/interpreter',
-    'https://overpass.kumi.systems/api/interpreter',
-    'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
   ];
 
   for (const endpoint of endpoints) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 25000);
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
 
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json',
         },
         body: `data=${encodeURIComponent(query)}`,
         signal: controller.signal,
@@ -135,6 +111,7 @@ out skel qt;`;
       if (res.ok) {
         const json: OverpassResponse = await res.json();
         if (json && json.elements && json.elements.length > 0) {
+          memorySessionCache.set(cacheKey, json);
           return json;
         }
       }
@@ -142,6 +119,26 @@ out skel qt;`;
       console.warn(`Overpass endpoint ${endpoint} failed:`, err);
     }
   }
+
+  // 3. PRESET FALLBACK: If live endpoints failed, check if matching a benchmark preset dataset
+  try {
+    let presetFile: string | null = null;
+    if (Math.hypot(centerLat - 1.285, centerLon - 103.856) < 0.05) presetFile = '/presets/marinabay.json';
+    else if (Math.hypot(centerLat - 45.440, centerLon - 12.335) < 0.05) presetFile = '/presets/venice.json';
+    else if (Math.hypot(centerLat - 35.659, centerLon - 139.700) < 0.05) presetFile = '/presets/shibuya.json';
+    else if (Math.hypot(centerLat - 40.707, centerLon - (-74.010)) < 0.05) presetFile = '/presets/manhattan.json';
+
+    if (presetFile) {
+      const pRes = await fetch(presetFile);
+      if (pRes.ok) {
+        const pJson: OverpassResponse = await pRes.json();
+        if (pJson && pJson.elements && pJson.elements.length > 0) {
+          memorySessionCache.set(cacheKey, pJson);
+          return pJson;
+        }
+      }
+    }
+  } catch {}
 
   // 4. OFFLINE PROCEDURAL BASIN (Guaranteed to have authentic water body and road network)
   console.warn('All open geospatial endpoints failed; generating terrain-matched urban watershed.');
