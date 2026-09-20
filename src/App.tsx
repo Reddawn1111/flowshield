@@ -20,7 +20,7 @@ export const App: React.FC = () => {
   // Current Location
   const [currentLocationName, setCurrentLocationName] = useState<string>('Shibuya Crossing, Tokyo');
   const [currentLocationId, setCurrentLocationId] = useState<string>('shibuya');
-  const [isMainMenuOpen, setIsMainMenuOpen] = useState<boolean>(true);
+  const [isMainMenuOpen, setIsMainMenuOpen] = useState<boolean>(false);
 
   // Grid State (90x90 = 8,100 columns)
   const [gridState, setGridState] = useState<GridState>(() => generateTerrain(90, 90, 'shibuya'));
@@ -42,14 +42,85 @@ export const App: React.FC = () => {
     };
   }, []);
 
+  // ── Streamlit Component & postMessage integration ─────────────────────────
+  useEffect(() => {
+    // Notify Streamlit that component is ready and declare required height
+    if (window.parent !== window) {
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type: 'streamlit:componentReady',
+        apiVersion: 1,
+      }, '*');
+
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type: 'streamlit:setFrameHeight',
+        height: 750,
+      }, '*');
+    }
+
+    const handleMessage = (event: MessageEvent) => {
+      const data = event.data;
+      if (!data) return;
+
+      // 1. Native Streamlit Custom Component message
+      if (data.type === 'streamlit:render' && data.args) {
+        const args = data.args;
+        if (typeof args.rainfallRate === 'number' && args.rainfallRate >= 0) {
+          setRainfallRate(Math.round(args.rainfallRate));
+        }
+        if (typeof args.riverSurge === 'number' && args.riverSurge >= 0) {
+          setRiverSurge(Math.round(args.riverSurge));
+        }
+        if (typeof args.locationId === 'string' && args.locationId !== currentLocationId) {
+          handleSelectLocation(args.locationId);
+        }
+        return;
+      }
+
+      // 2. Direct postMessage fallback (FLOWSHIELD_UPDATE)
+      if (data.type === 'FLOWSHIELD_UPDATE') {
+        if (typeof data.rainfallRate === 'number' && data.rainfallRate >= 0) {
+          setRainfallRate(Math.round(data.rainfallRate));
+        }
+        if (typeof data.riverSurge === 'number' && data.riverSurge >= 0) {
+          setRiverSurge(Math.round(data.riverSurge));
+        }
+        if (typeof data.locationId === 'string' && data.locationId !== currentLocationId) {
+          handleSelectLocation(data.locationId);
+        }
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentLocationId]);
+
+
+
   // Time & Playback
   const [currentHour, setCurrentHour] = useState<number>(0);
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [speed, setSpeed] = useState<number>(5); // 5x default
 
-  // Precipitation / Rainfall
-  const [rainfallRate, setRainfallRate] = useState<number>(85);
-  const [riverSurge, setRiverSurge] = useState<number>(180);
+  // Precipitation / Rainfall (read from URL query params if provided by Streamlit)
+  const [rainfallRate, setRainfallRate] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search);
+      const r = p.get('rain');
+      if (r && !isNaN(Number(r))) return Math.max(0, Math.round(Number(r)));
+    }
+    return 85;
+  });
+  const [riverSurge, setRiverSurge] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search);
+      const s = p.get('river');
+      if (s && !isNaN(Number(s))) return Math.max(0, Math.round(Number(s)));
+    }
+    return 180;
+  });
 
   // Tools & Selection
   const [selectedCell, setSelectedCell] = useState<Cell | null>(null);
@@ -69,6 +140,36 @@ export const App: React.FC = () => {
     cascadingAlerts: [],
     maxDepthM: 0,
   }));
+
+  // ── Streamlit Integration: post analytics back to parent ─────────────────
+  // When analytics change, notify the Streamlit parent so it can display
+  // live summary data alongside its own 2D map.
+  useEffect(() => {
+    if (window.parent === window) return; // not in an iframe, skip
+    const payload = {
+      affectedPopulation: analytics.affectedPopulation,
+      maxDepthM: analytics.maxDepthM,
+      safePct: analytics.safePct,
+      warningPct: analytics.warningPct,
+      criticalPct: analytics.criticalPct,
+      metroOperational: analytics.metroOperational,
+      cascadingAlerts: analytics.cascadingAlerts,
+    };
+
+    // Native Streamlit Component value update
+    window.parent.postMessage({
+      isStreamlitMessage: true,
+      type: 'streamlit:setComponentValue',
+      value: payload,
+    }, '*');
+
+    // General postMessage update
+    window.parent.postMessage({
+      type: 'FLOWSHIELD_ANALYTICS',
+      ...payload,
+    }, '*');
+  }, [analytics]);
+  // ─────────────────────────────────────────────────────────────────────────
 
   // Timeline cache for instant scrubbing
   const timelineCache = useRef<Map<number, { gridState: GridState; analytics: SimulationAnalytics }>>(new Map());

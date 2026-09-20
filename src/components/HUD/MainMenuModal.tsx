@@ -77,6 +77,8 @@ export const MainMenuModal: React.FC<MainMenuModalProps> = ({
   onLoadTerrainData,
   onClose,
 }) => {
+  if (!isOpen) return null;
+
   // Target coordinates & metadata
   const [targetLat, setTargetLat] = useState<number>(35.6595);
   const [targetLon, setTargetLon] = useState<number>(139.7006);

@@ -1,10 +1,11 @@
 @echo off
-title FLOWSHIELD 3D - Flood Simulation ^& Early Warning Command Center
+title FLOWSHIELD — 3D Digital Twin + Forecast Command Center
 cd /d "%~dp0"
-set "PATH=C:\Program Files\nodejs;%PATH%"
+
 echo ==============================================================================
-echo  FLOWSHIELD 3D: Hydrodynamic Flood Simulation ^& Early Warning Dashboard
+echo  FLOWSHIELD: Unified 3D Digital Twin + Forecast Command Center
+echo  Starting Streamlit Application at http://localhost:8501
 echo ==============================================================================
-echo  Opening dashboard at http://localhost:5173 ...
-start http://localhost:5173
-call "C:\Program Files\nodejs\npm.cmd" run dev
+echo.
+python -m streamlit run flowshield/app.py
+pause

@@ -137,14 +137,16 @@ export const Scene3D: React.FC<Scene3DProps> = ({
     sceneRef.current = scene;
 
     // CAMERA
-    const aspect = container.clientWidth / container.clientHeight;
+    const initW = container.clientWidth > 0 ? container.clientWidth : (window.innerWidth > 0 ? window.innerWidth : 1200);
+    const initH = container.clientHeight > 0 ? container.clientHeight : (window.innerHeight > 0 ? window.innerHeight : 700);
+    const aspect = initW / initH;
     const camera = new THREE.PerspectiveCamera(36, aspect, 1, 1000);
     camera.position.set(HALF_W * 1.5, Math.max(HALF_W, HALF_H) * 1.55, HALF_H * 1.75);
     cameraRef.current = camera;
 
     // RENDERER
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.setSize(initW, initH);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -610,14 +612,19 @@ export const Scene3D: React.FC<Scene3DProps> = ({
     scene.add(highlightMesh);
     selectedHighlightRef.current = highlightMesh;
 
-    // Resize
+    // Resize Observer (Handles Streamlit hidden tabs becoming visible)
     const handleResize = () => {
       if (!container || !camera || !renderer) return;
-      camera.aspect = container.clientWidth / container.clientHeight;
+      const width = container.clientWidth;
+      const height = container.clientHeight;
+      if (width === 0 || height === 0) return; // ignore when hidden
+      camera.aspect = width / height;
       camera.updateProjectionMatrix();
-      renderer.setSize(container.clientWidth, container.clientHeight);
+      renderer.setSize(width, height);
     };
-    window.addEventListener('resize', handleResize);
+    
+    const resizeObserver = new ResizeObserver(handleResize);
+    resizeObserver.observe(container);
 
     // Animation Loop
     let animationFrameId: number;
@@ -642,7 +649,7 @@ export const Scene3D: React.FC<Scene3DProps> = ({
 
     return () => {
       cancelAnimationFrame(animationFrameId);
-      window.removeEventListener('resize', handleResize);
+      resizeObserver.disconnect();
       renderer.dispose();
       terrainGeo.dispose();
       terrainMat.dispose();
@@ -963,7 +970,8 @@ export const Scene3D: React.FC<Scene3DProps> = ({
       ref={containerRef}
       onPointerDown={handlePointerDown}
       onPointerUp={handlePointerUp}
-      className="w-full h-full cursor-grab active:cursor-grabbing relative overflow-hidden"
+      className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing overflow-hidden"
+      style={{ minHeight: '100vh' }}
     />
   );
 };
