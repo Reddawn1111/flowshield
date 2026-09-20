@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+html, body {
+  background: transparent;
+  overflow: hidden;
+  padding: 2px 4px 6px;
+}
+.search-container {
+  position: relative;
+  width: 100%;
+}
+.input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: #06121e;
+  border: 1px solid #1e293b;
+  border-radius: 4px;
+  padding: 0 16px;
+  height: 42px;
+  box-shadow: none;
+  transition: all 0.2s ease;
+}
+.input-wrapper:focus-within {
+  border-color: #0284c7;
+  box-shadow: 0 0 8px rgba(2, 132, 199, 0.3);
+}
+.search-icon {
+  width: 18px;
+  height: 18px;
+  color: #7dd3fc;
+  margin-right: 12px;
+  flex-shrink: 0;
+}
+.search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #f8fafc;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+}
+.search-input::placeholder {
+  color: #64748b;
+}
+.clear-btn {
+  background: none;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 15px;
+  display: none;
+  padding: 4px 6px;
+  line-height: 1;
+}
+.clear-btn:hover {
+  color: #f8fafc;
+}
+
+/* Dropdown styling matching geometric HUD */
+.dropdown-menu {
+  display: none;
+  margin-top: 4px;
+  width: 100%;
+  background: #08131f;
+  border: 1px solid #1e293b;
+  border-radius: 4px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.9);
+  overflow: hidden;
+}
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  cursor: pointer;
+  border-bottom: 1px solid #13273e;
+  transition: background 0.15s ease;
+}
+.dropdown-item:last-child {
+  border-bottom: none;
+}
+.dropdown-item:hover, .dropdown-item.active {
+  background: #0e243a;
+}
+.item-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+.pin-icon-wrap {
+  width: 24px;
+  height: 24px;
+  border-radius: 2px;
+  border: 1px solid #1e293b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 132, 199, 0.15);
+  flex-shrink: 0;
+}
+.pin-icon {
+  width: 14px;
+  height: 14px;
+  color: #38bdf8;
+}
+.item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.item-name {
+  color: #f8fafc;
+  font-weight: 700;
+  font-size: 13.5px;
+  letter-spacing: 0.01em;
+}
+.item-sub {
+  color: #94a3b8;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+}
+.item-coords {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  color: #7dd3fc;
+  background: #091a2e;
+  border: 1px solid #1e3a5f;
+  border-radius: 4px;
+  padding: 3px 8px;
+  margin-left: 12px;
+  flex-shrink: 0;
+}
+.loading-indicator {
+  padding: 14px 16px;
+  color: #64748b;
+  font-size: 12px;
+  text-align: center;
+}
+</style>
+</head>
+<body>
+<div class="search-container" id="searchContainer">
+  <div class="input-wrapper">
+    <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="8"></circle>
+      <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+    </svg>
+    <input type="text" id="searchInput" class="search-input" placeholder="Search any place in the world (e.g. Paris, Tokyo, Miami, Valencia)..." autocomplete="off" spellcheck="false">
+    <button id="clearBtn" class="clear-btn" title="Clear search">&#10005;</button>
+  </div>
+  <div id="dropdownMenu" class="dropdown-menu"></div>
+</div>
+
+<script>
+const searchInput = document.getElementById('searchInput');
+const clearBtn = document.getElementById('clearBtn');
+const dropdownMenu = document.getElementById('dropdownMenu');
+const searchContainer = document.getElementById('searchContainer');
+
+let debounceTimer = null;
+let currentResults = [];
+let activeIndex = -1;
+
+function notifyHeight() {
+  const height = searchContainer.offsetHeight + 14;
+  window.parent.postMessage({
+    isStreamlitMessage: true,
+    type: "streamlit:setFrameHeight",
+    height: Math.max(52, height)
+  }, "*");
+  try {
+    if (window.frameElement) {
+      window.frameElement.style.height = Math.max(52, height) + "px";
+    }
+  } catch(e) {}
+}
+
+function sendToStreamlit(value) {
+  window.parent.postMessage({
+    isStreamlitMessage: true,
+    type: "streamlit:setComponentValue",
+    value: value
+  }, "*");
+}
+
+// Signal component ready to Streamlit
+window.parent.postMessage({
+  isStreamlitMessage: true,
+  type: "streamlit:componentReady",
+  apiVersion: 1
+}, "*");
+
+// Handle incoming messages from Streamlit
+window.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "streamlit:render") {
+    const args = event.data.args || {};
+    if (args.current_city && !searchInput.value) {
+      searchInput.setAttribute("placeholder", `Current: ${args.current_city} · Search any place in the world...`);
+    }
+    notifyHeight();
+  }
+});
+
+function renderItems(results) {
+  currentResults = results;
+  activeIndex = -1;
+  if (!results || results.length === 0) {
+    dropdownMenu.innerHTML = '<div class="loading-indicator">No locations found. Try a different city or region name.</div>';
+    notifyHeight();
+    return;
+  }
+  
+  let html = '';
+  results.forEach((item, index) => {
+    const parts = [item.name];
+    if (item.admin1) parts.push(item.admin1);
+    if (item.country) parts.push(item.country);
+    const fullAddress = parts.join(', ');
+    const lat = parseFloat(item.latitude).toFixed(4);
+    const lon = parseFloat(item.longitude).toFixed(4);
+    
+    html += `
+      <div class="dropdown-item" id="item_${index}" onclick="selectLocation(${index})" onmouseenter="setActiveItem(${index})">
+        <div class="item-left">
+          <div class="pin-icon-wrap">
+            <svg class="pin-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+              <circle cx="12" cy="10" r="3"></circle>
+            </svg>
+          </div>
+          <div class="item-text">
+            <span class="item-name">${item.name}</span>
+            <span class="item-sub" title="${fullAddress}">${fullAddress}</span>
+          </div>
+        </div>
+        <span class="item-coords">${lat}°, ${lon}°</span>
+      </div>
+    `;
+  });
+  dropdownMenu.innerHTML = html;
+  dropdownMenu.style.display = 'block';
+  notifyHeight();
+}
+
+window.setActiveItem = function(index) {
+  activeIndex = index;
+  const items = dropdownMenu.querySelectorAll('.dropdown-item');
+  items.forEach((it, idx) => {
+    if (idx === index) it.classList.add('active');
+    else it.classList.remove('active');
+  });
+};
+
+searchInput.addEventListener('input', function(e) {
+  const query = e.target.value.trim();
+  clearBtn.style.display = query.length > 0 ? 'block' : 'none';
+  
+  if (debounceTimer) clearTimeout(debounceTimer);
+  
+  if (query.length < 2) {
+    dropdownMenu.style.display = 'none';
+    currentResults = [];
+    activeIndex = -1;
+    notifyHeight();
+    return;
+  }
+  
+  dropdownMenu.style.display = 'block';
+  dropdownMenu.innerHTML = '<div class="loading-indicator">Searching locations across the globe...</div>';
+  notifyHeight();
+  
+  debounceTimer = setTimeout(() => {
+    fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=6&language=en&format=json`)
+      .then(r => r.json())
+      .then(data => {
+        const results = data.results || [];
+        renderItems(results);
+      })
+      .catch(err => {
+        dropdownMenu.innerHTML = '<div class="loading-indicator">Location search failed. Check network connection.</div>';
+        notifyHeight();
+      });
+  }, 160);
+});
+
+searchInput.addEventListener('focus', function() {
+  if (searchInput.value.trim().length >= 2 && currentResults.length > 0) {
+    dropdownMenu.style.display = 'block';
+    notifyHeight();
+  }
+});
+
+// Keyboard navigation (Arrow keys + Enter + Escape)
+searchInput.addEventListener('keydown', function(e) {
+  if (dropdownMenu.style.display !== 'block' || currentResults.length === 0) return;
+  
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    activeIndex = (activeIndex + 1) % currentResults.length;
+    window.setActiveItem(activeIndex);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    activeIndex = (activeIndex - 1 + currentResults.length) % currentResults.length;
+    window.setActiveItem(activeIndex);
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    const targetIdx = activeIndex >= 0 ? activeIndex : 0;
+    window.selectLocation(targetIdx);
+  } else if (e.key === 'Escape') {
+    dropdownMenu.style.display = 'none';
+    currentResults = [];
+    activeIndex = -1;
+    notifyHeight();
+  }
+});
+
+clearBtn.addEventListener('click', function() {
+  searchInput.value = '';
+  clearBtn.style.display = 'none';
+  dropdownMenu.style.display = 'none';
+  currentResults = [];
+  activeIndex = -1;
+  notifyHeight();
+  searchInput.focus();
+});
+
+window.selectLocation = function(index) {
+  const item = currentResults[index];
+  if (!item) return;
+  
+  // Collapse dropdown
+  dropdownMenu.style.display = 'none';
+  currentResults = [];
+  activeIndex = -1;
+  searchInput.value = item.name;
+  clearBtn.style.display = 'block';
+  notifyHeight();
+  
+  // Dispatch payload to Python Streamlit
+  sendToStreamlit({
+    name: item.name,
+    latitude: item.latitude,
+    longitude: item.longitude,
+    country: item.country || '',
+    admin1: item.admin1 || '',
+    elevation: item.elevation || 15.0,
+    timezone: item.timezone || 'UTC'
+  });
+};
+
+// Close dropdown on click outside
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('#searchContainer')) {
+    dropdownMenu.style.display = 'none';
+    currentResults = [];
+    activeIndex = -1;
+    notifyHeight();
+  }
+});
+
+// Initial height notifications
+setTimeout(notifyHeight, 50);
+setTimeout(notifyHeight, 200);
+</script>
+</body>
+</html>

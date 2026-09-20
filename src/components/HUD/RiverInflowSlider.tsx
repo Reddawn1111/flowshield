@@ -14,7 +14,7 @@ export const RiverInflowSlider: React.FC<RiverInflowSliderProps> = ({
   status,
 }) => {
   const isChecking = Boolean(status.checking || status.type === 'checking');
-  const tooltipText = status.tooltip || "No major river within 2.0 km";
+  const tooltipText = status.tooltip || "No river channel within 2.5 km of this sector";
 
   const getSurgeLabel = (rate: number) => {
     if (isChecking) return { label: 'Querying Overpass...', color: 'text-cyan-300', bg: 'bg-cyan-500/15 border-cyan-500/30' };
@@ -69,7 +69,7 @@ export const RiverInflowSlider: React.FC<RiverInflowSliderProps> = ({
             <div className="flex items-center gap-1.5 text-sky-300 font-bold truncate">
               <Navigation className="w-3.5 h-3.5 text-sky-400 shrink-0" />
               <span className="truncate">
-                {`Nearby Source: ${status.name || 'River'} (~${(status.distanceKm ?? 0).toFixed(1)} km)`}
+                {`Nearby Inflow: ${status.name || 'River'} (~${(status.distanceKm ?? 0).toFixed(1)} km)`}
               </span>
             </div>
             {status.trajectory?.direction && (

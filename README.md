@@ -1,76 +1,115 @@
-# FLOWSHIELD 3D: Urban Flood Digital Twin & Early Warning Engine
+# FLOWSHIELD — Flood Simulation & Early Warning Platform
 
 > **Predict the flood. Protect the future.**
 
-FLOWSHIELD is a production-ready 3D urban flood simulation and municipal early warning command center. Built with **React 18**, **TypeScript**, **Three.js (InstancedMesh)**, and **Tailwind CSS**, it models the real-time evolution of urban floodwaters across complex terrain, tracks transit along road networks, and triggers cascading failure warnings for critical infrastructure.
+FLOWSHIELD is a dual-engine urban flood simulation and early warning command center combining a **Python/Streamlit** operational dashboard with a **React 18 / Three.js** 3D digital twin engine.
 
 ---
 
-## 📸 Visual Design & Artifact-Free Voxel Architecture
+## Architecture
 
-- **Solid Beveled Pedestal Framing**: The entire 90×90 watershed sits on a thick, dark pedestal base with soft contact drop shadow, viewed from an interactive isometric perspective with OrbitControls.
-- **Unified Instanced Voxel Columns**: 8,100 extruded columns ($90 \times 90$ grid) rendered at **60 FPS** using Three.js `InstancedMesh`. Every column extends solidly from the pedestal ($y = 0$) up to $Z(x, y) + H(x, y)$, completely eliminating floating gaps and polygon slicing tears.
-- **Urban Road Corridors**: Primary arterial avenues and grid streets are rendered as distinct dark asphalt channels (`#1e2430`) acting as natural hydrological runoff corridors.
-- **3D Metro Line Polyline**: A 3D tube draped over the city profile connecting transit stations. Operates in glowing Violet (`#a855f7`) and transitions to flashing Alert Red (`#ef4444`) when track inundation occurs.
-- **Floating 3D Lifeline Beacons**: Floating animated beacons indicating real-time status for Hospitals (🏥 Emerald), Power Substations (⚡ Gold), and Metro Stations (🚇 Violet).
-- **Dynamic Color Overlays**:
-  - Dry terrain/roads: Monochrome grayscale and dark asphalt.
-  - Accumulated floodwater ($0.05\text{m} \le H < 0.4\text{m}$): Vibrant Electric Cyan (`#00E5FF`).
-  - Critical hazard ($H \ge 0.4\text{m}$ or rapid surge): Vibrant Alert Red (`#FF1744`).
-  - Transition warning: Electric Amber (`#FFB300`).
+```
+d:\Projects\Flood\
+├── flowshield/               # Python/Streamlit host application
+│   ├── app.py                # Main Streamlit dashboard (port 8501)
+│   ├── live_warning_service.py   # Predictive 24h flood warning engine
+│   ├── location_service.py   # Global geocoding & city config
+│   ├── historical_flood_data.py  # SAR-based flood archive
+│   ├── floodpy_pipeline.py   # Floodpy batch extraction pipeline
+│   ├── live_location_widget.py   # Browser Geolocation API bridge
+│   ├── location_search_widget.py # Nominatim autocomplete widget
+│   └── static/3d/            # ← compiled React bundle goes here (git-ignored)
+├── src/                      # React / Three.js 3D Digital Twin engine
+│   ├── App.tsx               # Root component + Streamlit postMessage bridge
+│   ├── engine/               # Physics, terrain, damage assessment
+│   ├── components/HUD/       # HUD panels (sliders, analytics, maps)
+│   ├── services/             # Overpass API, elevation, geocoding
+│   └── workers/              # Web Worker physics engine
+├── public/                   # Static presets and icons
+├── .streamlit/config.toml    # Streamlit config (enableStaticServing = true)
+├── app.py                    # Root Streamlit entry point
+├── package.json              # NPM scripts
+├── vite.config.ts            # Vite config (relative base for iframe serving)
+└── requirements.txt          # Python dependencies
+```
 
 ---
 
-## ⚙️ 2D Hydrodynamic Physics & Cascading Failure Engine
+## Quickstart
 
-### 1. Inflow & Surface Runoff
+### Prerequisites
+- **Node.js** 18+ and **npm**
+- **Python** 3.9+
+- Install Python dependencies: `pip install -r requirements.txt`
+- Install Node dependencies: `npm install`
+
+### Step 1: Build the 3D Digital Twin bundle
+```bash
+npm run build
+```
+This compiles the React/Three.js engine and automatically copies the built files into `flowshield/static/3d/` (served by Streamlit via static serving).
+
+### Step 2: Run the full platform
+```bash
+python -m streamlit run app.py
+```
+Open [http://localhost:8501](http://localhost:8501)
+
+---
+
+## Other Run Methods
+
+| Command | Description |
+|---|---|
+| `npm run dev` | Run standalone React 3D twin on `http://localhost:5173` |
+| `npm run dev:streamlit` | Run Streamlit dashboard only |
+| `npm run build` | Build 3D bundle and deploy to `flowshield/static/3d/` |
+| `python run.py` | Launch React dev server and open browser |
+| `run.bat` | Windows batch launcher |
+
+---
+
+## Features
+
+### 3D Digital Twin Engine
+- **3D Diorama**: 90×90 grid voxel city rendered at 60fps with Three.js `InstancedMesh`
+- **2D GIS Map**: Live Leaflet water depth heatmap synchronized with 3D simulation
+- **Split Viewport**: Side-by-side 3D and 2D view
+- **Web Worker Physics**: 20 ticks/sec hydrodynamic shallow-water simulation
+- **Damage Assessment**: Real-time economic loss and population exposure
+- **Cascading Failures**: Power grid → drainage pump → flood acceleration chain
+
+### River Inflow Detection (2.5 km Buffer)
+- Queries OpenStreetMap Overpass API within a 2.5 km bounding box
+- Three states: **Direct channel** (internal), **Nearby** (within 2.5 km, with directional trajectory), **Inactive** (no river found)
+- Dynamically enables/disables the River Inflow Dial
+
+### Streamlit Host Dashboard
+- **Live Sensors**: Real-time Open-Meteo weather and river discharge API
+- **2D Forecast Map**: PyDeck flood propagation visualization
+- **Predictive Warnings**: 24h cell-level RED SEVERE flood prediction
+- **Live Geolocation**: Browser GPS → flood risk mapping at user's exact grid cell
+- **Historical Archive**: 10+ historical storm events with SAR validation
+- **Scenario Mode**: Design storm stress testing and drainage clogging scenarios
+
+### Streamlit ↔ React Bridge
+- URL parameter injection (`?rain=&river=&loc=&city=`) for iframe state seeding
+- Bidirectional `postMessage`: `streamlit:render` / `FLOWSHIELD_UPDATE` → React; analytics back via `FLOWSHIELD_ANALYTICS`
+
+---
+
+## Physics Model
+
+### Inflow & Surface Runoff
 $$\Delta H_{precip} = \frac{R(t)}{1000} \cdot \Delta t$$
 
-### 2. Infiltration & Drainage Clearance
-$$\Delta H_{drain} = \min\left(H, \frac{D(x, y) + K(x, y)}{1000} \cdot \Delta t\right)$$
-where $K(x, y)$ is the permeability coefficient ($2\text{ mm/hr}$ on impervious asphalt/buildings vs permeable soil).
+### Infiltration & Drainage
+$$\Delta H_{drain} = \min\left(H, \frac{D(x,y) + K(x,y)}{1000} \cdot \Delta t\right)$$
 
-### 3. Gravity-Driven Hydraulic Head Routing
-Water flows down the total hydraulic head slope:
-$$\eta(x, y) = Z_{ground}(x, y) + H(x, y)$$
-Between any cell $i$ and neighbor $j$:
-$$\Delta \eta_{ij} = \eta_i - \eta_j$$
-Discharge volume is governed by the gradient and fluid depth with a CFL stability bound ($\le 0.25$).
-
-### 4. Cascading Infrastructure Failures
-- **Power Substation Inundation**: If water reaches $H \ge 0.35\text{m}$ at Substation Gamma, electrical power is cut to dependent stormwater pumps $\rightarrow$ drainage drops to $0\text{ mm/hr}$ $\rightarrow$ flood progression accelerates across adjacent sectors!
-- **Hospital Isolation**: If surrounding road network clearance drops below $0.4\text{m}$, hospital road access is flagged as **ISOLATED**, triggering critical dispatch alerts.
-- **Metro Line Suspension**: If tracks or stations submerge, service is automatically halted.
+### Gravity-Driven Head Routing
+$$\eta(x,y) = Z_{ground}(x,y) + H(x,y), \quad \Delta\eta_{ij} = \eta_i - \eta_j$$
 
 ---
 
-## 🏆 Hackathon Judging & Evaluation Highlights
-
-1. **Real-World Impact**: Live affected population tracking ($500k+$ citizens), hospital perimeter cutoff monitoring, and automated Common Alerting Protocol warnings.
-2. **Technical Execution**: High-performance Three.js `InstancedMesh` (8,100 columns at 60 FPS), interactive 24-hour time scrubbing, zero-artifact rendering.
-3. **Mathematical Modeling**: Mass-conserving 2D diffusive wave overland flow with hydraulic head routing and CFL stability.
-4. **Innovation & Creativity**:
-   - **Cascading Infrastructure Failures**: Substation outage accelerates pump failures.
-   - **Interactive Defense Sandbox**: Click columns to deploy sandbag barriers or simulate clogged culverts live.
-5. **Project Demonstration**: Turnkey dark-mode operations deck with 4 pre-configured emergency scenarios and raycasting inspector.
-
----
-
-## 🚀 Quickstart & How to Run
-
-### Method 1: Windows Batch
-Double-click `run.bat` in the project root:
-```cmd
-run.bat
-```
-
-### Method 2: Python
-```bash
-python run.py
-```
-
-### Method 3: NPM
-```bash
-npm run dev
-```
-Open `http://localhost:5173` in your browser.
+## License
+MIT

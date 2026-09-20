@@ -51,23 +51,68 @@ const cloneGrid = (g: GridState): GridState => {
   };
 };
 
+// Preset helpers
+const getPresetBBox = (loc: string): BoundingBox => {
+  if (loc === 'singapore') return { south: 1.279, west: 103.854, north: 1.288, east: 103.864 };
+  if (loc === 'manhattan') return { south: 40.702, west: -74.015, north: 40.713, east: -74.003 };
+  if (loc === 'venice') return { south: 45.434, west: 12.321, north: 45.443, east: 12.333 };
+  if (loc === 'apex') return { south: 22.314, west: 114.164, north: 22.324, east: 114.174 };
+  return { south: 35.655, west: 139.695, north: 35.664, east: 139.706 };
+};
+
+const getPresetRiverStatus = (loc: string): RiverInflowStatus => {
+  if (loc === 'shibuya') return { active: true, type: 'internal', name: 'Shibuya River (渋谷川)' };
+  if (loc === 'singapore') return { active: true, type: 'internal', name: 'Singapore River / Marina Bay' };
+  if (loc === 'manhattan') return { active: true, type: 'internal', name: 'Hudson & East Rivers' };
+  if (loc === 'venice') return { active: true, type: 'internal', name: 'Venice Grand Canal' };
+  if (loc === 'apex') return { active: true, type: 'internal', name: 'Apex River Delta' };
+  return { active: false };
+};
+
 export const App: React.FC = () => {
+  // Read initial location from URL query params if provided
+  const initialLoc = (() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search);
+      const urlLoc = p.get('loc');
+      if (urlLoc && LOCATION_PROFILES.some(l => l.id.toLowerCase() === urlLoc.toLowerCase())) {
+        return urlLoc.toLowerCase();
+      }
+    }
+    return 'shibuya';
+  })();
+
   // Current Location & Viewport Switcher State
-  const [currentLocationName, setCurrentLocationName] = useState<string>('Shibuya Crossing, Tokyo');
-  const [currentLocationId, setCurrentLocationId] = useState<string>('shibuya');
-  const [isMainMenuOpen, setIsMainMenuOpen] = useState<boolean>(true);
+  const [currentLocationName, setCurrentLocationName] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search);
+      const city = p.get('city');
+      if (city) return city;
+      const loc = p.get('loc');
+      if (loc) {
+        const found = LOCATION_PROFILES.find(l => l.id.toLowerCase() === loc.toLowerCase());
+        if (found) return found.name;
+        return loc.charAt(0).toUpperCase() + loc.slice(1);
+      }
+    }
+    return 'Shibuya Crossing, Tokyo';
+  });
+  const [currentLocationId, setCurrentLocationId] = useState<string>(initialLoc);
+  const [isMainMenuOpen, setIsMainMenuOpen] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      if (window.parent !== window) return false;
+      const p = new URLSearchParams(window.location.search);
+      if (p.has('loc') || p.has('city') || p.has('rain') || p.has('river')) return false;
+    }
+    return true;
+  });
   const [viewMode, setViewMode] = useState<'3d' | '2d' | 'split'>('3d');
 
   // Bounding Box state for 2D GIS map alignment
-  const [activeBBox, setActiveBBox] = useState<BoundingBox>(() => ({
-    south: 35.655,
-    west: 139.695,
-    north: 35.664,
-    east: 139.706,
-  }));
+  const [activeBBox, setActiveBBox] = useState<BoundingBox>(() => getPresetBBox(initialLoc));
 
   // Grid State (90x90 = 8,100 columns)
-  const [gridState, setGridState] = useState<GridState>(() => generateTerrain(90, 90, 'shibuya'));
+  const [gridState, setGridState] = useState<GridState>(() => generateTerrain(90, 90, initialLoc));
   const [terrainVersion, setTerrainVersion] = useState<number>(0);
   const pristineBaselineRef = useRef<GridState>(cloneGrid(gridState));
   const baseGridRef = useRef<GridState>(gridState);
@@ -94,14 +139,24 @@ export const App: React.FC = () => {
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [speed, setSpeed] = useState<number>(5); // 5x default
 
-  // Precipitation / Rainfall & River Inflow
-  const [rainfallRate, setRainfallRate] = useState<number>(85);
-  const [riverSurge, setRiverSurge] = useState<number>(180);
-  const [riverInflowStatus, setRiverInflowStatus] = useState<RiverInflowStatus>(() => ({
-    active: true,
-    type: 'internal',
-    name: 'Shibuya River (渋谷川)',
-  }));
+  // Precipitation / Rainfall & River Inflow (with URL parameter fallback)
+  const [rainfallRate, setRainfallRate] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search);
+      const r = p.get('rain');
+      if (r && !isNaN(Number(r))) return Math.max(0, Math.round(Number(r)));
+    }
+    return 85;
+  });
+  const [riverSurge, setRiverSurge] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search);
+      const s = p.get('river');
+      if (s && !isNaN(Number(s))) return Math.max(0, Math.round(Number(s)));
+    }
+    return 180;
+  });
+  const [riverInflowStatus, setRiverInflowStatus] = useState<RiverInflowStatus>(() => getPresetRiverStatus(initialLoc));
 
   // Decoupled Background River Detection Trigger
   const triggerDecoupledRiverCheck = useCallback((bbox: BoundingBox, initialStatus?: RiverInflowStatus) => {
@@ -126,7 +181,7 @@ export const App: React.FC = () => {
       })
       .catch((err) => {
         console.warn('Background river check fallback:', err);
-        setRiverInflowStatus({ active: false, tooltip: 'No major river within 2.0 km' });
+        setRiverInflowStatus({ active: false, tooltip: 'No river channel within 2.5 km of this sector' });
         setRiverSurge(0);
       });
   }, []);
@@ -261,15 +316,23 @@ export const App: React.FC = () => {
     }
   }, [triggerDecoupledRiverCheck]);
 
-  // Handle Location Switch from Main Menu
-  const handleSelectLocation = (locId: string) => {
+  // Handle Location Switch from Main Menu or Streamlit postMessage
+  const handleSelectLocation = useCallback((locId: string, customName?: string) => {
     setCurrentLocationId(locId);
     setIsRunning(false);
     simulationEpochRef.current += 1;
     currentHourRef.current = 0;
     setCurrentHour(0);
 
-    const locProfile = LOCATION_PROFILES.find(l => l.id === locId);
+    const locProfile = LOCATION_PROFILES.find(l => l.id.toLowerCase() === locId.toLowerCase());
+    if (customName) {
+      setCurrentLocationName(customName);
+    } else if (locProfile) {
+      setCurrentLocationName(locProfile.name);
+    } else {
+      setCurrentLocationName(locId.charAt(0).toUpperCase() + locId.slice(1));
+    }
+
     const fresh = generateTerrain(90, 90, locId);
     pristineBaselineRef.current = cloneGrid(fresh);
     baseGridRef.current = fresh;
@@ -278,25 +341,8 @@ export const App: React.FC = () => {
     setTerrainVersion(v => v + 1);
     timelineCache.current.clear();
 
-    let bbox: BoundingBox = { south: 35.655, west: 139.695, north: 35.664, east: 139.706 };
-    let presetRiverStatus: RiverInflowStatus = { active: false };
-
-    if (locId === 'shibuya') {
-      bbox = { south: 35.655, west: 139.695, north: 35.664, east: 139.706 };
-      presetRiverStatus = { active: true, type: 'internal', name: 'Shibuya River (渋谷川)' };
-    } else if (locId === 'singapore') {
-      bbox = { south: 1.279, west: 103.854, north: 1.288, east: 103.864 };
-      presetRiverStatus = { active: true, type: 'internal', name: 'Singapore River / Marina Bay' };
-    } else if (locId === 'manhattan') {
-      bbox = { south: 40.702, west: -74.015, north: 40.713, east: -74.003 };
-      presetRiverStatus = { active: true, type: 'internal', name: 'Hudson & East Rivers' };
-    } else if (locId === 'venice') {
-      bbox = { south: 45.434, west: 12.321, north: 45.443, east: 12.333 };
-      presetRiverStatus = { active: true, type: 'internal', name: 'Venice Grand Canal' };
-    } else if (locId === 'apex') {
-      bbox = { south: 22.314, west: 114.164, north: 22.324, east: 114.174 };
-      presetRiverStatus = { active: true, type: 'internal', name: 'Apex River Delta' };
-    }
+    const bbox = getPresetBBox(locId);
+    const presetRiverStatus = getPresetRiverStatus(locId);
 
     setActiveBBox(bbox);
     setRiverInflowStatus(presetRiverStatus);
@@ -328,7 +374,88 @@ export const App: React.FC = () => {
 
     // Fire background check for external locations if needed
     triggerDecoupledRiverCheck(bbox, presetRiverStatus);
-  };
+  }, [triggerDecoupledRiverCheck]);
+
+  // ── Streamlit Component & postMessage integration ─────────────────────────
+  useEffect(() => {
+    // Notify Streamlit that component is ready and declare required height
+    if (window.parent !== window) {
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type: 'streamlit:componentReady',
+        apiVersion: 1,
+      }, '*');
+
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type: 'streamlit:setFrameHeight',
+        height: 750,
+      }, '*');
+    }
+
+    const handleMessage = (event: MessageEvent) => {
+      const data = event.data;
+      if (!data) return;
+
+      // 1. Native Streamlit Custom Component message
+      if (data.type === 'streamlit:render' && data.args) {
+        const args = data.args;
+        if (typeof args.rainfallRate === 'number' && args.rainfallRate >= 0) {
+          setRainfallRate(Math.round(args.rainfallRate));
+        }
+        if (typeof args.riverSurge === 'number' && args.riverSurge >= 0) {
+          setRiverSurge(Math.round(args.riverSurge));
+        }
+        if (typeof args.locationId === 'string' && (args.locationId !== currentLocationId || args.cityName)) {
+          handleSelectLocation(args.locationId, args.cityName);
+        }
+        return;
+      }
+
+      // 2. Direct postMessage fallback (FLOWSHIELD_UPDATE)
+      if (data.type === 'FLOWSHIELD_UPDATE') {
+        if (typeof data.rainfallRate === 'number' && data.rainfallRate >= 0) {
+          setRainfallRate(Math.round(data.rainfallRate));
+        }
+        if (typeof data.riverSurge === 'number' && data.riverSurge >= 0) {
+          setRiverSurge(Math.round(data.riverSurge));
+        }
+        if (typeof data.locationId === 'string' && (data.locationId !== currentLocationId || data.cityName)) {
+          handleSelectLocation(data.locationId, data.cityName);
+        }
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [currentLocationId, handleSelectLocation]);
+
+  // ── Streamlit Integration: post analytics back to parent ─────────────────
+  useEffect(() => {
+    if (window.parent === window) return; // not in an iframe, skip
+    const payload = {
+      affectedPopulation: analytics.affectedPopulation,
+      maxDepthM: analytics.maxDepthM,
+      safePct: analytics.safePct,
+      warningPct: analytics.warningPct,
+      criticalPct: analytics.criticalPct,
+      metroOperational: analytics.metroOperational,
+      cascadingAlerts: analytics.cascadingAlerts,
+    };
+
+    // Native Streamlit Component value update
+    window.parent.postMessage({
+      isStreamlitMessage: true,
+      type: 'streamlit:setComponentValue',
+      value: payload,
+    }, '*');
+
+    // General postMessage update
+    window.parent.postMessage({
+      type: 'FLOWSHIELD_ANALYTICS',
+      ...payload,
+    }, '*');
+  }, [analytics]);
 
   // Interactive user actions
   const handleCellAction = (x: number, y: number, action: 'sandbag' | 'obstruct') => {
