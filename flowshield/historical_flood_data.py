@@ -5,7 +5,7 @@ Implements multi-event satellite radar flood frequency mapping (floodpy methodol
 and curated historical storm hindcast archives.
 """
 
-from typing import Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple
 import numpy as np
 
 GRID_SIZE = 12
