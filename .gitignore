@@ -39,3 +39,4 @@ capture.py
 inspect_*.py
 fetch_presets.py
 npm_wrap.bat
+push_to_github.bat
